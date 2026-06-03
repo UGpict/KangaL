@@ -1,4 +1,5 @@
 import {
+  DEFAULT_MAX_TURNS,
   generateWithTools,
   type ToolCall,
   type ToolDeclaration,
@@ -47,11 +48,10 @@ export type InvestigateInput = {
 // conversations with gemini-2.5-flash + tool execution can run 15–22s end
 // to end, especially when the model retries after an error response.
 const DEFAULT_BUDGET_MS = 25000;
-// 5 tools × at most 1 call per turn ⇒ 5 turns of tool work + 1 final
-// summary turn fits in 6. Earlier value of 4 was tight enough that a full
-// dynamic run (URL + auth + alerts + anchor + summary) would truncate
-// mid-investigation. 6 leaves room for the model to retry one bad call.
-const DEFAULT_MAX_TURNS = 6;
+// maxTurns intentionally defers to gemini.ts's DEFAULT_MAX_TURNS. The
+// rationale that drove that value (5 declared tools × 1 call/turn + 1
+// summary turn) is this orchestrator's, but the constant lives there so
+// it's not silently duplicated.
 
 // Tool routing is driven by these descriptions — Gemini reads them and
 // decides which tools to call. The orchestrator does NOT pre-filter calls

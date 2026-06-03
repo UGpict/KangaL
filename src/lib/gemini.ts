@@ -104,7 +104,10 @@ export type GenerateWithToolsResult = {
   toolCalls: ToolCall[];
 };
 
-const DEFAULT_MAX_TURNS = 4;
+// Single source of truth for the tool-loop ceiling. 6 was picked for the
+// investigate orchestrator (5 declared tools × 1 call/turn + 1 summary turn);
+// other callers can override per-call. See investigate.ts for the rationale.
+export const DEFAULT_MAX_TURNS = 6;
 
 type ConversationPart = {
   text?: string;

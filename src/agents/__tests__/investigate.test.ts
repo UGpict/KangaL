@@ -5,6 +5,8 @@ import { exampleAttackPattern } from "@/types/__fixtures__/attackPattern.example
 // Mock the gemini wrapper — we control which tools the "model" routes to.
 vi.mock("@/lib/gemini", () => ({
   generateWithTools: vi.fn(),
+  // Mirror the real export so investigate.ts's import resolves under mock.
+  DEFAULT_MAX_TURNS: 6,
 }));
 
 // Mock each leaf tool — we verify call/no-call and pin return values.
