@@ -25,15 +25,18 @@ type AlertsFile = {
 const SNAPSHOT: AlertsFile = rawAlerts as AlertsFile;
 const MAX_MATCHES = 5;
 
-export type AlertMatch = { title: string; link: string };
+// Field name kept as `url` to match OfficialAlertMatch in
+// types/investigation.ts. The value is a `snapshot://` pseudo-URL — see
+// syntheticUrl() — not a navigable http(s) URL.
+export type AlertMatch = { title: string; url: string };
 
 export type CheckOfficialAlertsResult =
   | { ok: true; matches: AlertMatch[] }
   | { ok: false; reason: string };
 
-// Stable synthetic link so the AlertMatch shape stays satisfied. UI can
+// Stable synthetic URL so the AlertMatch shape stays satisfied. UI can
 // surface this as "snapshot://..." rather than render it as a real URL.
-function syntheticLink(id: string): string {
+function syntheticUrl(id: string): string {
   return `snapshot://officialAlerts/${id}`;
 }
 
@@ -51,7 +54,7 @@ export async function checkOfficialAlerts(args: {
     if (keywords.some((k) => alert.title.includes(k))) {
       matches.push({
         title: alert.title,
-        link: syntheticLink(alert.id),
+        url: syntheticUrl(alert.id),
       });
       if (matches.length >= MAX_MATCHES) break;
     }

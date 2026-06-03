@@ -222,7 +222,7 @@ function mapOfficialAlerts(
   if (r.ok) {
     return {
       status: "ok",
-      matches: r.matches.map((m) => ({ title: m.title, url: m.link })),
+      matches: r.matches.map((m) => ({ title: m.title, url: m.url })),
     };
   }
   return { status: "error", errorMessage: r.reason };

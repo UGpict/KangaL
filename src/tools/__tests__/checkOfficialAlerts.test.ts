@@ -19,7 +19,7 @@ describe("checkOfficialAlerts (static snapshot)", () => {
       expect(result.matches.length).toBeGreaterThan(0);
       for (const m of result.matches) {
         expect(m.title).toContain("カンガル銀行");
-        expect(m.link.startsWith("snapshot://officialAlerts/")).toBe(true);
+        expect(m.url.startsWith("snapshot://officialAlerts/")).toBe(true);
       }
     }
   });
