@@ -238,12 +238,16 @@ function makeExecutors(
 ): Record<string, ToolExecutor> {
   return {
     checkUrlReputation: async (call: ToolCall) => {
+      // `url` came from the LLM itself (extracted by the model from the
+      // message). Not direct user input — no extra stripping needed here.
       const url = typeof call.args.url === "string" ? call.args.url : "";
       const result = await checkUrlReputation({ url });
       findings.urlReputation = mapUrlReputation(result);
       return result as unknown as Record<string, unknown>;
     },
     checkDomainAge: async (call: ToolCall) => {
+      // `domain` came from the LLM itself (extracted by the model). Not
+      // direct user input — no extra stripping needed here.
       const domain = typeof call.args.domain === "string" ? call.args.domain : "";
       const result = await checkDomainAge({ domain });
       findings.domainAge = mapDomainAge(result);
@@ -264,6 +268,17 @@ function makeExecutors(
         : input.authenticationResults ?? "";
       const result = await verifySenderAuth({ authenticationResults: headers });
       findings.senderAuth = mapSenderAuth(result);
+      // C3: Strip `raw` before feeding back to Gemini. `raw` echoes the
+      // user-supplied Authentication-Results header verbatim — re-injecting
+      // it as a functionResponse would let a crafted header smuggle text
+      // past the nonce-tagged untrusted_input boundary on the next turn. The
+      // UI-side finding keeps `raw` because that's already on our side of
+      // the trust boundary (rendered, never re-prompted).
+      if (result.ok) {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { raw: _stripped, ...safeForModel } = result;
+        return safeForModel as unknown as Record<string, unknown>;
+      }
       return result as unknown as Record<string, unknown>;
     },
     matchKnownScams: async () => {
