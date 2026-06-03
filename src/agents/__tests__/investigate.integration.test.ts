@@ -31,11 +31,25 @@ const BEC_BODY = `いつもお世話になっております。カンガル商�
 新振込口座: カンガル銀行 ○○支店 普通 1234567 カ)カンガルシヨウジ
 ──────────`;
 
+// Phishing fixture: BEC body but with an http(s):// URL added. Used to
+// assert the URL-driven routing rule from the production description.
+const PHISHING_BODY = `あなたのアカウントが一時的に制限されました。下記より本人確認をお願いします。
+https://login.example/verify`;
+
+const PHISHING_LEVERS: AttackPattern["levers"] = {
+  urgency: { tactic: "account_freeze", intensity: 3 },
+  authority: { impersonates: "platform", credibilityTricks: ["url_lookalike"] },
+  incentive: { type: "fear", hook: "account_loss", intensity: 3 },
+  callToAction: { action: "click_link", friction: "low" },
+  personalization: { level: "broadcast", signals: [] },
+  isolation: { tactic: "none", intensity: 0 },
+};
+
 describe.skipIf(!RUN_INTEGRATION)(
   "investigate (integration, real Vertex AI routing)",
   () => {
     it(
-      "BEC sample: matchKnownScams runs unconditionally, and Gemini routes to at least one of (checkUrlReputation, checkOfficialAlerts). Tool failures (e.g. missing WEB_RISK_API_KEY) degrade gracefully without stopping investigate.",
+      "BEC sample (no URL): matchKnownScams runs (anchor); checkUrlReputation is NOT called because there is no http(s):// in the body; verifySenderAuth and checkOfficialAlerts both fire from the auth header and the business_partner impersonation.",
       async () => {
         const report = await investigate({
           message: BEC_BODY,
@@ -44,23 +58,21 @@ describe.skipIf(!RUN_INTEGRATION)(
           budgetMs: 25_000,
         });
 
-        // (1) matchKnownScams is the always-call tool.
+        // (anchor) matchKnownScams always runs.
         expect(report.knownScams).toBeDefined();
 
-        // (2) At least one of the conditional tools associated with the
-        // BEC profile was routed to. The body has no http(s):// URL so
-        // checkUrlReputation may legitimately be skipped; the bank-name
-        // mention should trigger checkOfficialAlerts. Either is fine.
-        const conditionalCalled =
-          report.urlReputation !== undefined ||
-          report.officialAlerts !== undefined ||
-          report.senderAuth !== undefined ||
-          report.domainAge !== undefined;
-        expect(conditionalCalled).toBe(true);
+        // (negative routing assert) Body has no http(s):// URL, so the
+        // routing description explicitly forbids checkUrlReputation. If
+        // routing degenerates into "always call every tool", this fails.
+        expect(report.urlReputation).toBeUndefined();
 
-        // (3) Graceful degradation: even if WEB_RISK_API_KEY is unset or
-        // antiphishing.jp is unreachable, investigate completes — findings
-        // surface as status:"error", never as a thrown exception.
+        // (positive routing assert) Auth header present ⇒ verifySenderAuth.
+        // business_partner impersonation ⇒ checkOfficialAlerts.
+        expect(report.senderAuth).toBeDefined();
+        expect(report.officialAlerts).toBeDefined();
+
+        // Graceful degradation: any finding present must be ok or error,
+        // never a thrown exception.
         for (const finding of [
           report.urlReputation,
           report.domainAge,
@@ -72,7 +84,37 @@ describe.skipIf(!RUN_INTEGRATION)(
           expect(["ok", "error"]).toContain(finding.status);
         }
 
-        // (4) Completion within budget.
+        expect(report.truncated).toBe(false);
+      },
+      60_000,
+    );
+
+    it(
+      "phishing sample (URL in body): matchKnownScams runs (anchor); checkUrlReputation IS called because the body carries an http(s):// URL.",
+      async () => {
+        const report = await investigate({
+          message: PHISHING_BODY,
+          levers: PHISHING_LEVERS,
+          budgetMs: 25_000,
+        });
+
+        expect(report.knownScams).toBeDefined();
+
+        // (positive routing assert) URL present ⇒ checkUrlReputation must
+        // fire. status may be "ok" or "error" depending on WEB_RISK_API_KEY.
+        expect(report.urlReputation).toBeDefined();
+
+        for (const finding of [
+          report.urlReputation,
+          report.domainAge,
+          report.senderAuth,
+          report.officialAlerts,
+          report.knownScams,
+        ]) {
+          if (finding === undefined) continue;
+          expect(["ok", "error"]).toContain(finding.status);
+        }
+
         expect(report.truncated).toBe(false);
       },
       60_000,
