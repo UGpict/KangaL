@@ -359,7 +359,7 @@ describe("investigate (dynamic routing)", () => {
     expect(report.senderAuth?.raw).toBe(hostileAuth);
   });
 
-  it("tool declarations include matchKnownScams as the always-call tool and the four conditional tools", () => {
+  it("(C5) anchor enforcement lives in system instruction, NOT in matchKnownScams description; dynamic routing lives in descriptions of the 4 conditional tools", () => {
     const names = TOOL_DECLARATIONS.map((d) => d.name);
     expect(names).toEqual([
       "checkUrlReputation",
@@ -368,10 +368,13 @@ describe("investigate (dynamic routing)", () => {
       "matchKnownScams",
       "checkOfficialAlerts",
     ]);
+    // anchor: description must NOT carry the call-frequency enforcement —
+    // that's a system-instruction concern (see design v0.5 §6-4).
     const mks = TOOL_DECLARATIONS.find((d) => d.name === "matchKnownScams");
-    expect(mks?.description).toMatch(/必ず\s*1\s*回/);
+    expect(mks?.description).not.toMatch(/必ず\s*1\s*回/);
+    // dynamic: each conditional tool encodes its routing rule in its
+    // description. Spot-check the URL rule as the canary.
     const url = TOOL_DECLARATIONS.find((d) => d.name === "checkUrlReputation");
-    // Encodes the "do not call without URL" routing rule.
     expect(url?.description).toMatch(/呼んではいけない|含まれているときだけ/);
   });
 });

@@ -102,8 +102,10 @@ export const TOOL_DECLARATIONS: ToolDeclaration[] = [
   },
   {
     name: "matchKnownScams",
+    // anchor ツールなので、呼び出しの強制（「最初に必ず 1 回」）は description ではなく
+    // システム命令側に書く。ここには「何をするツールか」だけを書く。
     description:
-      "構造分解(6 レバー)の直後に必ず 1 回だけ呼ぶ。事例 DB のレバー組み合わせと照合して、既知の手口に近いものがあるかを確認する。引数は不要(レバーはオーケストレータが渡す)。",
+      "事例 DB のレバー組み合わせと照合して、既知の手口に近いものがあるかを確認する。引数は不要(レバーはオーケストレータが渡す)。",
     parameters: {
       type: "OBJECT",
       properties: {},
