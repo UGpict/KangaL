@@ -1,6 +1,7 @@
 import type { AttackPattern } from "@/types/attackPattern";
 import { listAttackPatterns } from "@/lib/firestore";
 import { LEVER_WEIGHTS, type LeverKey } from "@/lib/weights";
+import type { KnownScamMatch } from "@/types/investigation";
 
 // Single source of truth for lever count — never hardcode /6. Adding a 7th
 // lever (unlikely but possible) propagates automatically through this and
@@ -14,10 +15,13 @@ const LEVER_KEYS = Object.keys(LEVER_WEIGHTS) as LeverKey[];
 export const KNOWN_SCAM_HIT_THRESHOLD = 0.5;
 export const KNOWN_SCAM_MAX_MATCHES = 5;
 
-export type ScamMatch = { id: string; similarity: number };
+// Single source for the match shape — see KnownScamMatch in types/investigation.ts.
+// Kept as a re-export so existing imports of `ScamMatch` from this module
+// continue to compile if any external code references them.
+export type ScamMatch = KnownScamMatch;
 
 export type MatchKnownScamsResult =
-  | { ok: true; matches: ScamMatch[] }
+  | { ok: true; matches: KnownScamMatch[] }
   | { ok: false; reason: string };
 
 // FUTURE: replace with vector-search similarity (Vertex Text Embeddings +
@@ -61,7 +65,7 @@ export async function matchKnownScams(args: {
 }): Promise<MatchKnownScamsResult> {
   try {
     const patterns = await listAttackPatterns();
-    const matches: ScamMatch[] = [];
+    const matches: KnownScamMatch[] = [];
     for (const p of patterns) {
       const s = similarity(args.levers, p.levers);
       if (s >= KNOWN_SCAM_HIT_THRESHOLD) {
