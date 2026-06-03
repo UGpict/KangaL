@@ -24,3 +24,18 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Verdict card entrance — soft pop to draw the eye when the judgment arrives. */
+@keyframes verdict-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.verdict-pop {
+  animation: verdict-pop-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
