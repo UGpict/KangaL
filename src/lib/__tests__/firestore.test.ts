@@ -69,3 +69,55 @@ describe("firestore (smoke)", () => {
     expect(await listBenignSamples()).toEqual([]);
   });
 });
+
+describe("firestore scam helpers (smoke)", () => {
+  it("listScamSamples reads from scamSamples and returns id + kind + body", async () => {
+    const { listScamSamples, SCAM_SAMPLE_COLLECTION } = await import(
+      "../firestore"
+    );
+    mockGet.mockResolvedValueOnce({
+      docs: [
+        {
+          id: "scam-001",
+          data: () => ({ kind: "scam", messageBody: "x" }),
+        },
+      ],
+    });
+    const result = await listScamSamples();
+    expect(mockCollection).toHaveBeenCalledWith(SCAM_SAMPLE_COLLECTION);
+    expect(result).toEqual([
+      { id: "scam-001", kind: "scam", messageBody: "x" },
+    ]);
+  });
+
+  it("listAttackPatterns reads from attackPatterns and overrides id from the doc id", async () => {
+    const { listAttackPatterns, ATTACK_PATTERN_COLLECTION } = await import(
+      "../firestore"
+    );
+    mockGet.mockResolvedValueOnce({
+      docs: [
+        {
+          id: "pat-001",
+          data: () => ({
+            id: "ignored-internal-id",
+            generation: 1,
+            sourceContext: "fictional",
+            channel: "email",
+            levers: {},
+          }),
+        },
+      ],
+    });
+    const result = await listAttackPatterns();
+    expect(mockCollection).toHaveBeenCalledWith(ATTACK_PATTERN_COLLECTION);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("pat-001");
+    expect(result[0].generation).toBe(1);
+  });
+
+  it("listAttackPatterns returns [] for an empty collection", async () => {
+    const { listAttackPatterns } = await import("../firestore");
+    mockGet.mockResolvedValueOnce({ docs: [] });
+    expect(await listAttackPatterns()).toEqual([]);
+  });
+});

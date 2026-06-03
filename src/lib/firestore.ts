@@ -1,7 +1,13 @@
 import { Firestore } from "@google-cloud/firestore";
-import type { BenignSample } from "@/types/attackPattern";
+import type {
+  AttackPattern,
+  BenignSample,
+  ScamSample,
+} from "@/types/attackPattern";
 
 export const BENIGN_COLLECTION = "benignSamples";
+export const SCAM_SAMPLE_COLLECTION = "scamSamples";
+export const ATTACK_PATTERN_COLLECTION = "attackPatterns";
 
 let cachedDb: Firestore | null = null;
 
@@ -44,5 +50,33 @@ export async function listBenignSamples(): Promise<
       kind: "benign" as const,
       messageBody: typeof data.messageBody === "string" ? data.messageBody : "",
     };
+  });
+}
+
+// Scam corpus helpers. Used by matchKnownScams (Chunk 2) and by the attack
+// agent (Task 8 onward). For Chunk 2 the collections are empty, so callers
+// will get empty arrays.
+export async function listScamSamples(): Promise<
+  Array<{ id: string } & ScamSample>
+> {
+  const snap = await getDb().collection(SCAM_SAMPLE_COLLECTION).get();
+  return snap.docs.map((d) => {
+    const data = d.data();
+    return {
+      id: d.id,
+      kind: "scam" as const,
+      messageBody: typeof data.messageBody === "string" ? data.messageBody : "",
+    };
+  });
+}
+
+export async function listAttackPatterns(): Promise<AttackPattern[]> {
+  const snap = await getDb().collection(ATTACK_PATTERN_COLLECTION).get();
+  return snap.docs.map((d) => {
+    const data = d.data() as AttackPattern;
+    // Trust that the writer (Task 8 attack agent) shaped the doc correctly.
+    // Defensive parsing would be heavy here and obscure shape drift — let it
+    // surface as a downstream type error instead.
+    return { ...data, id: d.id };
   });
 }
