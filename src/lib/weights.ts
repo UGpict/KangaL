@@ -1,4 +1,9 @@
 import type { AttackPattern } from "@/types/attackPattern";
+import type {
+  BonusItem,
+  InvestigationBonus,
+  InvestigationReport,
+} from "@/types/investigation";
 
 export type LeverKey = keyof AttackPattern["levers"];
 
@@ -65,4 +70,77 @@ export function maxRawScore(): number {
   return (
     3 * Object.values(LEVER_WEIGHTS).reduce((sum, w) => sum + w, 0)
   );
+}
+
+// ── Investigation bonus (Chunk 4) ───────────────────────────────────────
+//
+// Per-signal point values when an investigation tool surfaces a danger
+// indicator. All values are ADD-ONLY: a clean investigation (domain old,
+// SPF/DKIM/DMARC all pass, Web Risk clear) does NOT subtract from the
+// lever-only score. This is intentional — we'd rather miss a benign signal
+// than false-negative a real scam. Calibration with real corpora may
+// revisit this asymmetry later.
+export const BONUS_WEB_RISK_THREAT = 15;
+export const BONUS_DOMAIN_YOUNG = 10;
+export const BONUS_DOMAIN_AGE_DAYS_THRESHOLD = 7;
+export const BONUS_SENDER_AUTH_FAIL = 8;
+export const BONUS_KNOWN_SCAM_PER_MATCH = 5;
+export const BONUS_KNOWN_SCAM_CAP = 15;
+export const BONUS_OFFICIAL_ALERT = 8;
+// Sum of individual signals can reach 56 in theory; we clamp the total
+// contribution to keep "two strong signals = ceiling" as an intentional
+// engineering choice. Raising this cap restores additive behavior.
+export const INVESTIGATION_BONUS_CAP = 25;
+
+export function computeInvestigationBonus(
+  report: InvestigationReport | null | undefined,
+): InvestigationBonus {
+  if (!report) return { items: [], total: 0, capped: false };
+
+  const items: BonusItem[] = [];
+
+  if (
+    report.urlReputation?.status === "ok" &&
+    (report.urlReputation.threats?.length ?? 0) > 0
+  ) {
+    items.push({ source: "webRisk", points: BONUS_WEB_RISK_THREAT });
+  }
+
+  if (
+    report.domainAge?.status === "ok" &&
+    typeof report.domainAge.ageDays === "number" &&
+    report.domainAge.ageDays < BONUS_DOMAIN_AGE_DAYS_THRESHOLD
+  ) {
+    items.push({ source: "domainAge", points: BONUS_DOMAIN_YOUNG });
+  }
+
+  if (report.senderAuth?.status === "ok") {
+    const { spf, dkim, dmarc } = report.senderAuth;
+    if (spf === "fail" || dkim === "fail" || dmarc === "fail") {
+      items.push({ source: "senderAuth", points: BONUS_SENDER_AUTH_FAIL });
+    }
+  }
+
+  if (
+    report.knownScams?.status === "ok" &&
+    (report.knownScams.matches?.length ?? 0) > 0
+  ) {
+    const matchCount = report.knownScams.matches!.length;
+    const points = Math.min(
+      BONUS_KNOWN_SCAM_CAP,
+      matchCount * BONUS_KNOWN_SCAM_PER_MATCH,
+    );
+    items.push({ source: "knownScams", points });
+  }
+
+  if (
+    report.officialAlerts?.status === "ok" &&
+    (report.officialAlerts.matches?.length ?? 0) > 0
+  ) {
+    items.push({ source: "officialAlerts", points: BONUS_OFFICIAL_ALERT });
+  }
+
+  const rawTotal = items.reduce((sum, it) => sum + it.points, 0);
+  const total = Math.min(INVESTIGATION_BONUS_CAP, rawTotal);
+  return { items, total, capped: rawTotal > INVESTIGATION_BONUS_CAP };
 }

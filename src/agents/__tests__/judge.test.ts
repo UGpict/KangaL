@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttackPattern } from "@/types/attackPattern";
+import type { InvestigationReport } from "@/types/investigation";
 
 vi.mock("@/lib/gemini", () => ({
   generateJson: vi.fn(),
@@ -178,6 +179,292 @@ describe("judge", () => {
     expect(result.reason).toBe(
       "解析結果から危険度を判定しました。文面を落ち着いてご確認ください。",
     );
+  });
+
+  it("investigationBonus is empty (total 0) when no investigation is passed", async () => {
+    const result = await judge(BEC_LEVERS);
+    expect(result.investigationBonus).toEqual({
+      items: [],
+      total: 0,
+      capped: false,
+    });
+  });
+
+  it("backwards compat: judge(levers) without investigation gives the same score as before Chunk 4", async () => {
+    const withoutInv = await judge(BEC_LEVERS);
+    const withNull = await judge(BEC_LEVERS, null);
+    const withUndefined = await judge(BEC_LEVERS, undefined);
+    expect(withoutInv.score).toBe(92);
+    expect(withNull.score).toBe(92);
+    expect(withUndefined.score).toBe(92);
+  });
+});
+
+function reportFrom(
+  partial: Partial<InvestigationReport>,
+): InvestigationReport {
+  return {
+    truncated: false,
+    bonus: { items: [], total: 0, capped: false },
+    ...partial,
+  };
+}
+
+describe("judge with investigation bonus", () => {
+  // Use a mid-band fixture so we can see bonus contributions clearly.
+  // urgency:2 + nothing else high → linear ≈ 12. Floor is 0. So baseline = 12.
+  function leversFromOverrides(
+    overrides: Partial<AttackPattern["levers"]> = {},
+  ): AttackPattern["levers"] {
+    return {
+      urgency: { tactic: "deadline", intensity: 2 },
+      authority: { impersonates: "none", credibilityTricks: [] },
+      incentive: { type: "reward", hook: "prize", intensity: 0 },
+      callToAction: { action: "click_link", friction: "high" },
+      personalization: { level: "broadcast", signals: [] },
+      isolation: { tactic: "none", intensity: 0 },
+      ...overrides,
+    };
+  }
+
+  const MID_LEVERS = leversFromOverrides();
+
+  it("(a-1) +15 when Web Risk reports a threat", async () => {
+    const report = reportFrom({
+      urlReputation: { status: "ok", threats: ["SOCIAL_ENGINEERING"] },
+    });
+    const result = await judge(MID_LEVERS, report);
+    expect(result.investigationBonus.items).toContainEqual({
+      source: "webRisk",
+      points: 15,
+    });
+    expect(result.investigationBonus.total).toBe(15);
+  });
+
+  it("(a-2) +10 when domain age < 7 days", async () => {
+    const report = reportFrom({
+      domainAge: {
+        status: "ok",
+        domain: "kangaru-shoji.example",
+        registeredAt: "2026-06-01",
+        ageDays: 3,
+      },
+    });
+    const result = await judge(MID_LEVERS, report);
+    expect(result.investigationBonus.items).toContainEqual({
+      source: "domainAge",
+      points: 10,
+    });
+    expect(result.investigationBonus.total).toBe(10);
+  });
+
+  it("(a-2') no domainAge bonus when ageDays is >= 7", async () => {
+    const report = reportFrom({
+      domainAge: {
+        status: "ok",
+        domain: "old.example",
+        registeredAt: "2010-01-01",
+        ageDays: 5000,
+      },
+    });
+    const result = await judge(MID_LEVERS, report);
+    expect(result.investigationBonus.items).toEqual([]);
+    expect(result.investigationBonus.total).toBe(0);
+  });
+
+  it("(a-3) +8 when any of spf/dkim/dmarc fails", async () => {
+    const report = reportFrom({
+      senderAuth: {
+        status: "ok",
+        spf: "fail",
+        dkim: "pass",
+        dmarc: "pass",
+        raw: "spf=fail dkim=pass dmarc=pass",
+      },
+    });
+    const result = await judge(MID_LEVERS, report);
+    expect(result.investigationBonus.items).toContainEqual({
+      source: "senderAuth",
+      points: 8,
+    });
+  });
+
+  it("(a-3') no senderAuth bonus when all pass", async () => {
+    const report = reportFrom({
+      senderAuth: {
+        status: "ok",
+        spf: "pass",
+        dkim: "pass",
+        dmarc: "pass",
+        raw: "spf=pass dkim=pass dmarc=pass",
+      },
+    });
+    const result = await judge(MID_LEVERS, report);
+    expect(result.investigationBonus.items).toEqual([]);
+  });
+
+  it("(a-4) +5 per known scam match, capped at +15", async () => {
+    const report = reportFrom({
+      knownScams: {
+        status: "ok",
+        matches: [
+          { id: "p-1", similarity: 0.9 },
+          { id: "p-2", similarity: 0.8 },
+        ],
+      },
+    });
+    const result = await judge(MID_LEVERS, report);
+    expect(result.investigationBonus.items).toContainEqual({
+      source: "knownScams",
+      points: 10,
+    });
+  });
+
+  it("(a-4') knownScams sub-cap kicks in at 4+ matches", async () => {
+    const report = reportFrom({
+      knownScams: {
+        status: "ok",
+        matches: Array.from({ length: 5 }, (_, i) => ({
+          id: `p-${i}`,
+          similarity: 0.7,
+        })),
+      },
+    });
+    const result = await judge(MID_LEVERS, report);
+    expect(result.investigationBonus.items).toContainEqual({
+      source: "knownScams",
+      points: 15,
+    });
+  });
+
+  it("(a-5) +8 when official alerts have at least one match", async () => {
+    const report = reportFrom({
+      officialAlerts: {
+        status: "ok",
+        matches: [{ title: "カンガル銀行を装う詐欺", url: "https://x" }],
+      },
+    });
+    const result = await judge(MID_LEVERS, report);
+    expect(result.investigationBonus.items).toContainEqual({
+      source: "officialAlerts",
+      points: 8,
+    });
+  });
+
+  it("(b) total bonus is capped at +25 even when individual signals sum higher", async () => {
+    const report = reportFrom({
+      urlReputation: { status: "ok", threats: ["MALWARE"] }, // 15
+      domainAge: {
+        status: "ok",
+        domain: "x.example",
+        registeredAt: "2026-06-01",
+        ageDays: 1,
+      }, // 10
+      senderAuth: {
+        status: "ok",
+        spf: "fail",
+        dkim: "fail",
+        dmarc: "fail",
+        raw: "x",
+      }, // 8
+      knownScams: {
+        status: "ok",
+        matches: [{ id: "p", similarity: 0.8 }],
+      }, // 5
+      officialAlerts: {
+        status: "ok",
+        matches: [{ title: "alert", url: "x" }],
+      }, // 8
+      // raw sum = 15+10+8+5+8 = 46, capped at 25
+    });
+    const result = await judge(MID_LEVERS, report);
+    expect(result.investigationBonus.total).toBe(25);
+    expect(result.investigationBonus.capped).toBe(true);
+  });
+
+  it("score = min(100, baseScore + bonus.total) — strong investigation lifts but never exceeds 100", async () => {
+    // BEC scores 92 alone; +25 bonus would be 117 → clamped to 100.
+    const report = reportFrom({
+      urlReputation: { status: "ok", threats: ["MALWARE"] },
+      domainAge: {
+        status: "ok",
+        domain: "x.example",
+        registeredAt: "2026-06-01",
+        ageDays: 1,
+      },
+      senderAuth: {
+        status: "ok",
+        spf: "fail",
+        dkim: "fail",
+        dmarc: "fail",
+        raw: "x",
+      },
+    });
+    const result = await judge(BEC_LEVERS, report);
+    expect(result.investigationBonus.total).toBe(25);
+    expect(result.score).toBe(100); // 92 + 25 = 117 → 100
+  });
+
+  it("(c) investigation=null yields the same score as no investigation", async () => {
+    const baseline = await judge(BEC_LEVERS);
+    const withNull = await judge(BEC_LEVERS, null);
+    expect(withNull.score).toBe(baseline.score);
+    expect(withNull.investigationBonus).toEqual({
+      items: [],
+      total: 0,
+      capped: false,
+    });
+  });
+
+  it("(d) bonus breakdown is exposed structurally so UI/tests can iterate items", async () => {
+    const report = reportFrom({
+      urlReputation: { status: "ok", threats: ["MALWARE"] },
+      senderAuth: {
+        status: "ok",
+        spf: "fail",
+        dkim: "pass",
+        dmarc: "pass",
+        raw: "x",
+      },
+    });
+    const result = await judge(MID_LEVERS, report);
+    expect(result.investigationBonus.items.map((i) => i.source)).toEqual([
+      "webRisk",
+      "senderAuth",
+    ]);
+    expect(result.investigationBonus.items.map((i) => i.points)).toEqual([
+      15, 8,
+    ]);
+  });
+
+  it("an investigation with all 'error' findings contributes 0 (bonus is add-only, never negative)", async () => {
+    const report = reportFrom({
+      urlReputation: { status: "error", errorMessage: "missing_api_key" },
+      domainAge: { status: "error", errorMessage: "http_404" },
+      senderAuth: { status: "error", errorMessage: "no_auth_tokens" },
+      knownScams: { status: "error", errorMessage: "firestore_down" },
+      officialAlerts: { status: "error", errorMessage: "timeout" },
+    });
+    const result = await judge(MID_LEVERS, report);
+    expect(result.investigationBonus.total).toBe(0);
+    expect(result.investigationBonus.items).toEqual([]);
+  });
+
+  it("investigation findings are included in the Gemini user payload for reason generation", async () => {
+    const report = reportFrom({
+      urlReputation: { status: "ok", threats: ["SOCIAL_ENGINEERING"] },
+      domainAge: {
+        status: "ok",
+        domain: "young.example",
+        registeredAt: "2026-06-01",
+        ageDays: 2,
+      },
+    });
+    await judge(MID_LEVERS, report);
+    const call = vi.mocked(generateJson).mock.calls[0][0];
+    expect(call.userText).toContain("investigation_findings");
+    expect(call.userText).toContain("SOCIAL_ENGINEERING");
+    expect(call.userText).toContain("young.example");
   });
 
   it("payload contains no free-text fields — only enum values and integers (injection surface check)", async () => {
