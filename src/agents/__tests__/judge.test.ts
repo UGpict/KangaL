@@ -157,12 +157,14 @@ describe("judge", () => {
     expect(call.userText).not.toContain("personalization");
   });
 
-  it("wraps the payload in <untrusted_input> tags (defense-in-depth)", async () => {
+  it("wraps the payload in a nonce-tagged untrusted_input element (defense-in-depth)", async () => {
     await judge(BEC_LEVERS);
     const call = vi.mocked(generateJson).mock.calls[0][0];
     expect(call.userText).toMatch(
-      /^<untrusted_input>\n[\s\S]+\n<\/untrusted_input>$/,
+      /^<untrusted_input_[0-9a-f-]{36}>\n[\s\S]+\n<\/untrusted_input_[0-9a-f-]{36}>$/,
     );
+    const tag = call.userText.match(/^<(untrusted_input_[0-9a-f-]{36})>/)![1];
+    expect(call.systemInstruction).toContain(tag);
   });
 
   it("includes a Prompt Injection guard in the system instruction", async () => {
@@ -470,8 +472,8 @@ describe("judge with investigation bonus", () => {
   it("payload contains no free-text fields — only enum values and integers (injection surface check)", async () => {
     await judge(BEC_LEVERS);
     const call = vi.mocked(generateJson).mock.calls[0][0];
-    // Extract the JSON inside the <untrusted_input> wrapper
-    const match = call.userText.match(/<untrusted_input>\n([\s\S]+)\n<\/untrusted_input>/);
+    // Extract the JSON inside the nonce-tagged untrusted_input wrapper
+    const match = call.userText.match(/<untrusted_input_[0-9a-f-]{36}>\n([\s\S]+)\n<\/untrusted_input_[0-9a-f-]{36}>/);
     expect(match).not.toBeNull();
     const payload = JSON.parse(match![1]);
     // Recursively assert: every leaf is either string-from-enum, number, or boolean — no free-form text
