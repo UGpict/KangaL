@@ -23,6 +23,11 @@ export type InvestigationBonus = {
   capped: boolean;
 };
 
+// "skipped" is currently unused — the dynamic router never emits skip
+// findings (a tool the router elects not to call simply does not appear in
+// the report). Kept as a reserved value for the case where we want to make
+// "explicitly considered and skipped" visible in the UI (e.g., to render
+// "URL check: skipped — no link in body" rather than nothing at all).
 export type ToolStatus = "ok" | "error" | "skipped";
 
 // Per-tool result shapes. Each is optional on InvestigationReport so the
