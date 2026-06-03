@@ -127,6 +127,10 @@ export async function generateWithTools(
     { role: "user", parts: [{ text: input.userText }] },
   ];
   const toolCalls: ToolCall[] = [];
+  // Track the last model turn's parts so that on a truncation exit (maxTurns
+  // reached while the model was still calling tools) we can still surface
+  // any text it produced in that final turn — see M1.
+  let lastParts: ConversationPart[] = [];
 
   for (let turn = 0; turn < maxTurns; turn++) {
     const response = await ai.models.generateContent({
@@ -146,6 +150,7 @@ export async function generateWithTools(
     const candidate = response.candidates?.[0];
     const parts: ConversationPart[] =
       (candidate?.content?.parts as ConversationPart[] | undefined) ?? [];
+    lastParts = parts;
 
     const calls: ToolCall[] = parts
       .filter(
@@ -202,5 +207,12 @@ export async function generateWithTools(
     });
   }
 
-  return { text: "", turns: maxTurns, truncated: true, toolCalls };
+  // M1: preserve any text the model produced in the final (truncated) turn.
+  // Previously this was hard-coded to "" and lost the model's intermediate
+  // reasoning when truncation fired alongside text.
+  const truncatedText = lastParts
+    .map((p) => p.text ?? "")
+    .join("")
+    .trim();
+  return { text: truncatedText, turns: maxTurns, truncated: true, toolCalls };
 }

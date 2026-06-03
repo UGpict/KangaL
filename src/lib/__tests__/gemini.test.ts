@@ -137,6 +137,36 @@ describe("generateWithTools", () => {
     expect(mockGenerateContent).toHaveBeenCalledTimes(2);
   });
 
+  it("(M1) when truncation fires alongside text in the last model turn, the text is preserved (not lost)", async () => {
+    // Model's final turn carries both a functionCall AND a text part —
+    // historically the text was dropped on truncation. M1 keeps it.
+    mockGenerateContent.mockResolvedValue({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              { text: "partial reasoning so far..." },
+              { functionCall: { name: "echo", args: { value: "x" } } },
+            ],
+          },
+        },
+      ],
+    });
+    const executor = vi.fn(async () => ({ ok: true }));
+
+    const result = await generateWithTools({
+      systemInstruction: "sys",
+      userText: "go",
+      tools: [SAMPLE_TOOL],
+      executors: { echo: executor },
+      maxTurns: 1,
+    });
+
+    expect(result.truncated).toBe(true);
+    expect(result.text).toBe("partial reasoning so far...");
+  });
+
   it("(d) when executor throws, error is forwarded as functionResponse and the loop continues", async () => {
     mockGenerateContent
       .mockResolvedValueOnce(modelFunctionCallTurn("echo", { value: "boom" }))
