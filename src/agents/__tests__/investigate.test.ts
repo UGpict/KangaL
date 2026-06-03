@@ -201,8 +201,10 @@ describe("investigate (dynamic routing)", () => {
     }
   });
 
-  it("(d / M4) budget timeout surfaces truncatedReason='budget' alongside the partial report", async () => {
+  it("(d / M4 / C2) budget timeout surfaces truncatedReason='budget' and aborts the SDK signal", async () => {
+    let receivedSignal: AbortSignal | undefined;
     vi.mocked(generateWithTools).mockImplementation(async (input) => {
+      receivedSignal = input.signal;
       // Fast call: matchKnownScams completes before the budget timer.
       await input.executors.matchKnownScams({
         name: "matchKnownScams",
@@ -227,6 +229,43 @@ describe("investigate (dynamic routing)", () => {
     expect(report.urlReputation).toBeUndefined();
     // Returned roughly within the budget (plus a small grace window).
     expect(elapsed).toBeLessThan(180);
+    // C2: the SDK call should have been aborted on budget loss.
+    expect(receivedSignal).toBeDefined();
+    expect(receivedSignal!.aborted).toBe(true);
+  });
+
+  it("(C2) when generation rejects after the budget already won, no unhandled rejection escapes — the report is still returned", async () => {
+    // Generation rejects asynchronously after the budget loss. With C2's
+    // .catch in place this must not surface as an unhandled rejection.
+    vi.mocked(generateWithTools).mockImplementation(async (input) => {
+      await input.executors.matchKnownScams({
+        name: "matchKnownScams",
+        args: {},
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      throw new Error("vertex blew up after budget loss");
+    });
+
+    let unhandled: unknown = null;
+    const handler = (reason: unknown) => {
+      unhandled = reason;
+    };
+    process.on("unhandledRejection", handler);
+
+    try {
+      const report = await investigate({
+        message: "msg",
+        levers: BASE_LEVERS,
+        budgetMs: 20,
+      });
+      expect(report.truncated).toBe(true);
+      expect(report.truncatedReason).toBe("budget");
+      // Give the late rejection a tick to surface if it would have.
+      await new Promise((r) => setTimeout(r, 80));
+      expect(unhandled).toBeNull();
+    } finally {
+      process.off("unhandledRejection", handler);
+    }
   });
 
   it("(M4) max-turns truncation surfaces truncatedReason='max_turns'", async () => {

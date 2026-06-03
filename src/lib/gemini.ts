@@ -90,6 +90,11 @@ export type GenerateWithToolsInput = {
   model?: string;
   temperature?: number;
   maxTurns?: number;
+  // Forwarded to the SDK's generateContent call as `config.abortSignal`.
+  // The SDK note says this is a client-side cancel only — the request keeps
+  // billing on the server side — but it does free the local promise so we
+  // don't burn the caller's budget waiting on a doomed turn.
+  signal?: AbortSignal;
 };
 
 export type GenerateWithToolsResult = {
@@ -134,6 +139,7 @@ export async function generateWithTools(
         systemInstruction: input.systemInstruction,
         temperature: input.temperature ?? 0.2,
         tools: [{ functionDeclarations: input.tools as never }],
+        abortSignal: input.signal,
       },
     });
 

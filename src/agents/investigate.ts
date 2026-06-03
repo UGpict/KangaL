@@ -317,12 +317,21 @@ export async function investigate(
   const budgetMs = input.budgetMs ?? DEFAULT_BUDGET_MS;
 
   const { text: userText, messageTag, authTag } = buildUserText(input);
+  const abortController = new AbortController();
   const generation = generateWithTools({
     systemInstruction: buildSystemInstruction(messageTag, authTag),
     userText,
     tools: TOOL_DECLARATIONS,
     executors,
     maxTurns: DEFAULT_MAX_TURNS,
+    signal: abortController.signal,
+  });
+  // C2: catch the unhandled rejection now. When the budget timer wins the
+  // race below, the generation promise is still outstanding. Without this
+  // catch, the eventual SDK rejection (e.g. after our abort) would surface
+  // as an UnhandledPromiseRejection on the event loop.
+  generation.catch(() => {
+    /* swallowed — the budget-loss path already produced truncatedReason. */
   });
 
   let budgetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -338,6 +347,10 @@ export async function investigate(
       budget.then(() => ({ kind: "timeout" as const })),
     ]);
     if (winner.kind === "timeout") {
+      // C2: cancel the in-flight SDK call so the local promise doesn't keep
+      // running past the user-facing budget. (Server-side billing
+      // continues — that's an SDK limitation called out on the type.)
+      abortController.abort();
       truncated = true;
       truncatedReason = "budget";
       console.warn("[investigate] truncated: budget exceeded");
