@@ -4,6 +4,11 @@ export type InboxMessage = {
   subject: string;
   body: string;
   receivedAt: string;
+  // Synthetic Authentication-Results value (e.g. "spf=pass dkim=pass dmarc=pass").
+  // Present only on email-like messages; SMS/chat samples should omit it.
+  // Format is a deliberately simplified subset of the real header so the
+  // tool layer can parse it with a controllable regex (see Chunk 2).
+  authenticationResults?: string;
 };
 
 // All names, addresses, and bank references below are fictional. CLAUDE.md
@@ -15,6 +20,7 @@ export const SAMPLE_MESSAGES: InboxMessage[] = [
     from: "田中 健 <tanaka@example.internal>",
     subject: "来週水曜の定例について",
     receivedAt: "2026-06-03 09:12",
+    authenticationResults: "spf=pass dkim=pass dmarc=pass",
     body: `田中です。
 
 来週水曜の定例ですが、いつも通り 14:00 からで大丈夫でしょうか。
@@ -26,6 +32,7 @@ export const SAMPLE_MESSAGES: InboxMessage[] = [
     from: "田中 健 <tanaka@example.internal>",
     subject: "【本日中】チーム勉強会の参加可否のご回答お願いします",
     receivedAt: "2026-06-03 11:48",
+    authenticationResults: "spf=pass dkim=pass dmarc=pass",
     body: `田中です。
 
 来週金曜のチーム勉強会、参加可否を本日中に下記フォームでご回答いただけますと助かります。
@@ -39,6 +46,7 @@ https://forms.example.internal/abc123
     from: "カンガル商事 経理部 山田太郎 <yamada@kangaru-shoji.example>",
     subject: "【至急】お振込先変更のお願い(社外秘)",
     receivedAt: "2026-06-03 13:27",
+    authenticationResults: "spf=fail dkim=fail dmarc=fail",
     body: `いつもお世話になっております。カンガル商事 経理部の山田です。
 
 先ほどお電話でお伝えした請求の件ですが、振込先の口座情報を急遽変更させていただきたくご連絡しました。
