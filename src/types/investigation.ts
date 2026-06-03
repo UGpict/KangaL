@@ -83,5 +83,11 @@ export type InvestigationReport = {
   // model response. Downstream judges can still use the partial findings, but
   // they should know the model didn't get to summarize.
   truncated: boolean;
+  // Why the investigation was truncated (or null when it finished cleanly).
+  // - "max_turns": generateWithTools hit its maxTurns ceiling
+  // - "budget":   the whole-investigation budget timer fired first
+  // - "error":    generateWithTools rejected (SDK / network)
+  // Surfaced in the UI so users can tell "still loading vs. real cap".
+  truncatedReason: "max_turns" | "budget" | "error" | null;
   bonus: InvestigationBonus;
 };

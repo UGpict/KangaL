@@ -331,17 +331,28 @@ export async function investigate(
   });
 
   let truncated = false;
+  let truncatedReason: "max_turns" | "budget" | "error" | null = null;
   try {
     const winner = await Promise.race([
       generation.then((r) => ({ kind: "done" as const, result: r })),
       budget.then(() => ({ kind: "timeout" as const })),
     ]);
-    truncated = winner.kind === "timeout" || winner.result.truncated;
-  } catch {
+    if (winner.kind === "timeout") {
+      truncated = true;
+      truncatedReason = "budget";
+      console.warn("[investigate] truncated: budget exceeded");
+    } else if (winner.result.truncated) {
+      truncated = true;
+      truncatedReason = "max_turns";
+      console.warn("[investigate] truncated: maxTurns reached");
+    }
+  } catch (e) {
     // generateWithTools is supposed to not throw on tool failures, but
     // unexpected SDK errors could still surface here. Treat as truncated
     // so the caller knows the report is incomplete.
     truncated = true;
+    truncatedReason = "error";
+    console.warn("[investigate] truncated: generation error", e);
   } finally {
     if (budgetTimer !== null) clearTimeout(budgetTimer);
   }
@@ -349,6 +360,7 @@ export async function investigate(
   return {
     ...findings,
     truncated,
+    truncatedReason,
     // bonus is populated by judge in Chunk 4. We emit a zeroed placeholder
     // so the InvestigationReport contract from Chunk 1 stays satisfied;
     // any downstream consumer reading bonus on a report from investigate

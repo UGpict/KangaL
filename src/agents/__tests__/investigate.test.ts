@@ -201,7 +201,7 @@ describe("investigate (dynamic routing)", () => {
     }
   });
 
-  it("(d) when the total budget is exceeded, investigate returns the partial report with truncated:true", async () => {
+  it("(d / M4) budget timeout surfaces truncatedReason='budget' alongside the partial report", async () => {
     vi.mocked(generateWithTools).mockImplementation(async (input) => {
       // Fast call: matchKnownScams completes before the budget timer.
       await input.executors.matchKnownScams({
@@ -222,10 +222,28 @@ describe("investigate (dynamic routing)", () => {
     const elapsed = Date.now() - start;
 
     expect(report.truncated).toBe(true);
+    expect(report.truncatedReason).toBe("budget");
     expect(report.knownScams?.status).toBe("ok");
     expect(report.urlReputation).toBeUndefined();
     // Returned roughly within the budget (plus a small grace window).
     expect(elapsed).toBeLessThan(180);
+  });
+
+  it("(M4) max-turns truncation surfaces truncatedReason='max_turns'", async () => {
+    vi.mocked(generateWithTools).mockResolvedValueOnce({
+      text: "",
+      turns: 6,
+      truncated: true,
+      toolCalls: [],
+    });
+
+    const report = await investigate({
+      message: "msg",
+      levers: BASE_LEVERS,
+    });
+
+    expect(report.truncated).toBe(true);
+    expect(report.truncatedReason).toBe("max_turns");
   });
 
   it("matchKnownScams executor uses input.levers from closure regardless of args", async () => {
@@ -298,7 +316,7 @@ describe("investigate (dynamic routing)", () => {
     });
   });
 
-  it("when generateWithTools rejects, investigate returns truncated:true rather than throwing", async () => {
+  it("(M4) when generateWithTools rejects, investigate returns truncated:true with truncatedReason='error'", async () => {
     vi.mocked(generateWithTools).mockRejectedValueOnce(
       new Error("vertex unavailable"),
     );
@@ -309,6 +327,7 @@ describe("investigate (dynamic routing)", () => {
     });
 
     expect(report.truncated).toBe(true);
+    expect(report.truncatedReason).toBe("error");
     // No findings were collected because generateWithTools rejected before
     // any executor ran.
     expect(report.knownScams).toBeUndefined();

@@ -207,6 +207,7 @@ function reportFrom(
 ): InvestigationReport {
   return {
     truncated: false,
+    truncatedReason: null,
     bonus: { items: [], total: 0, capped: false },
     ...partial,
   };
