@@ -58,30 +58,81 @@ function pinDefaultToolResponses() {
   vi.mocked(checkOfficialAlerts).mockResolvedValue({ ok: true, matches: [] });
 }
 
+// Routing-aware fake of generateWithTools. This is the *single* place where
+// the routing rules are encoded — each test then asserts what was/wasn't
+// called as a *consequence* of the rules below, not as a hand-rolled echo of
+// the test's own expectations. If the production routing description in
+// investigate.ts ever degenerates into "always call every tool", these tests
+// have to be rewritten — that's the regression-detection lever we want.
+//
+// The rules deliberately mirror the description text of each TOOL_DECLARATION:
+//   - matchKnownScams        : anchor (always 1×)
+//   - checkUrlReputation     : when message contains http(s)://
+//   - checkDomainAge         : when message contains http(s):// (extracts host)
+//   - verifySenderAuth       : when input.authenticationResults is provided
+//   - checkOfficialAlerts    : when authority.impersonates !== "none"
+function makeRoutingFake(req: {
+  message: string;
+  levers: AttackPattern["levers"];
+  authenticationResults?: string;
+}) {
+  return async (input: Parameters<typeof generateWithTools>[0]) => {
+    // anchor — always first, always once.
+    await input.executors.matchKnownScams({
+      name: "matchKnownScams",
+      args: {},
+    });
+
+    const urlMatch = req.message.match(/https?:\/\/\S+/);
+    if (urlMatch) {
+      const url = urlMatch[0];
+      await input.executors.checkUrlReputation({
+        name: "checkUrlReputation",
+        args: { url },
+      });
+      try {
+        const host = new URL(url).hostname;
+        await input.executors.checkDomainAge({
+          name: "checkDomainAge",
+          args: { domain: host },
+        });
+      } catch {
+        // bad URL — model would not call checkDomainAge; do nothing
+      }
+    }
+
+    if (typeof req.authenticationResults === "string" && req.authenticationResults.length > 0) {
+      await input.executors.verifySenderAuth({
+        name: "verifySenderAuth",
+        args: { authenticationResults: req.authenticationResults },
+      });
+    }
+
+    if (req.levers.authority.impersonates !== "none") {
+      await input.executors.checkOfficialAlerts({
+        name: "checkOfficialAlerts",
+        args: { keywords: [req.levers.authority.impersonates] },
+      });
+    }
+
+    return { text: "done", turns: 2, truncated: false, toolCalls: [] };
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   pinDefaultToolResponses();
 });
 
 describe("investigate (dynamic routing)", () => {
-  it("(a) when the message contains a URL, checkUrlReputation is invoked with that URL", async () => {
-    // Simulated Gemini: chooses matchKnownScams + checkUrlReputation.
-    vi.mocked(generateWithTools).mockImplementation(async (input) => {
-      await input.executors.matchKnownScams({
-        name: "matchKnownScams",
-        args: {},
-      });
-      await input.executors.checkUrlReputation({
-        name: "checkUrlReputation",
-        args: { url: "https://bad.example/login" },
-      });
-      return { text: "done", turns: 2, truncated: false, toolCalls: [] };
-    });
-
-    const report = await investigate({
+  it("(a) when the message contains a URL, the routing fake reaches checkUrlReputation", async () => {
+    const req = {
       message: "急ぎで https://bad.example/login にアクセスしてください",
       levers: BASE_LEVERS,
-    });
+    };
+    vi.mocked(generateWithTools).mockImplementation(makeRoutingFake(req));
+
+    const report = await investigate(req);
 
     expect(checkUrlReputation).toHaveBeenCalledWith({
       url: "https://bad.example/login",
@@ -91,21 +142,18 @@ describe("investigate (dynamic routing)", () => {
     expect(report.truncated).toBe(false);
   });
 
-  it("(b) when no URL is in the input, the model does not route to checkUrlReputation", async () => {
-    vi.mocked(generateWithTools).mockImplementation(async (input) => {
-      // Only matchKnownScams — no URL means no checkUrlReputation call.
-      await input.executors.matchKnownScams({
-        name: "matchKnownScams",
-        args: {},
-      });
-      return { text: "done", turns: 1, truncated: false, toolCalls: [] };
-    });
-
-    await investigate({
+  it("(b) when no URL is in the input, the routing fake does NOT reach checkUrlReputation", async () => {
+    const req = {
       message: "来週の定例の議題ですが、いつもどおりで大丈夫でしょうか",
       levers: BASE_LEVERS,
-    });
+    };
+    vi.mocked(generateWithTools).mockImplementation(makeRoutingFake(req));
 
+    await investigate(req);
+
+    // The fake encodes the "no URL ⇒ no checkUrlReputation" routing rule. If
+    // the production description ever loses that condition (e.g. someone
+    // makes URL-check unconditional), this assertion is the regression line.
     expect(checkUrlReputation).not.toHaveBeenCalled();
     expect(matchKnownScams).toHaveBeenCalledOnce();
   });
@@ -115,22 +163,13 @@ describe("investigate (dynamic routing)", () => {
       ok: false,
       reason: "missing_api_key",
     });
-    vi.mocked(generateWithTools).mockImplementation(async (input) => {
-      await input.executors.matchKnownScams({
-        name: "matchKnownScams",
-        args: {},
-      });
-      await input.executors.checkUrlReputation({
-        name: "checkUrlReputation",
-        args: { url: "https://x.example" },
-      });
-      return { text: "done", turns: 2, truncated: false, toolCalls: [] };
-    });
-
-    const report = await investigate({
+    const req = {
       message: "https://x.example",
       levers: BASE_LEVERS,
-    });
+    };
+    vi.mocked(generateWithTools).mockImplementation(makeRoutingFake(req));
+
+    const report = await investigate(req);
 
     expect(report.urlReputation).toEqual({
       status: "error",
@@ -138,6 +177,28 @@ describe("investigate (dynamic routing)", () => {
     });
     expect(report.knownScams?.status).toBe("ok");
     expect(report.truncated).toBe(false);
+  });
+
+  it("(anchor) matchKnownScams is always called exactly once, regardless of what other tools the router picks", async () => {
+    // Three different inputs hit the routing fake — but the anchor invariant
+    // is that matchKnownScams runs exactly once each time.
+    const inputs = [
+      { message: "plain text", levers: BASE_LEVERS },
+      { message: "https://foo.example", levers: BASE_LEVERS },
+      {
+        message: "auth case",
+        levers: BASE_LEVERS,
+        authenticationResults: "spf=pass dkim=pass dmarc=pass",
+      },
+    ];
+
+    for (const req of inputs) {
+      vi.clearAllMocks();
+      pinDefaultToolResponses();
+      vi.mocked(generateWithTools).mockImplementation(makeRoutingFake(req));
+      await investigate(req);
+      expect(matchKnownScams).toHaveBeenCalledOnce();
+    }
   });
 
   it("(d) when the total budget is exceeded, investigate returns the partial report with truncated:true", async () => {
