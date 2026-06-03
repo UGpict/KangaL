@@ -3,6 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { JudgeResponseBody } from "@/app/api/judge/route";
 import { SAMPLE_MESSAGES, type InboxMessage } from "@/lib/sampleMessages";
+import type {
+  BonusSource,
+  InvestigationBonus,
+  InvestigationReport,
+} from "@/types/investigation";
 
 type LoadState =
   | { kind: "idle" }
@@ -71,7 +76,10 @@ export default function InboxApp() {
       const response = await fetch("/api/judge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: message.body }),
+        body: JSON.stringify({
+          message: message.body,
+          authenticationResults: message.authenticationResults,
+        }),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
@@ -245,6 +253,185 @@ function VerdictCard({ result }: { result: JudgeResponseBody }) {
           </div>
           <p className="whitespace-pre-wrap">{result.isolationNote}</p>
         </div>
+      )}
+      <InvestigationSection
+        investigation={result.investigation}
+        bonus={result.investigationBonus}
+      />
+    </div>
+  );
+}
+
+// Concise summary string for each tool finding. Keeps emojis off the
+// status-color palette (neutral zinc only, per Chunk 5 spec) and degrades
+// gracefully on missing data / long strings.
+type ToolRow = {
+  source: BonusSource;
+  emoji: string;
+  label: string;
+  summary: string;
+};
+
+function rowsFromInvestigation(report: InvestigationReport): ToolRow[] {
+  const rows: ToolRow[] = [];
+
+  if (report.urlReputation) {
+    const f = report.urlReputation;
+    let summary: string;
+    if (f.status === "ok") {
+      summary = (f.threats?.length ?? 0) > 0
+        ? `${f.threats!.join(", ")} を検出`
+        : "脅威なし";
+    } else {
+      summary = `判定不可 (${f.errorMessage ?? "unknown"})`;
+    }
+    rows.push({ source: "webRisk", emoji: "🌐", label: "Web Risk", summary });
+  }
+
+  if (report.domainAge) {
+    const f = report.domainAge;
+    let summary: string;
+    if (f.status === "ok") {
+      const days = typeof f.ageDays === "number" ? `${f.ageDays} 日` : "不明";
+      summary = `登録から ${days}${f.domain ? ` (${f.domain})` : ""}`;
+    } else {
+      summary = `判定不可 (${f.errorMessage ?? "unknown"})`;
+    }
+    rows.push({
+      source: "domainAge",
+      emoji: "📅",
+      label: "ドメイン年齢",
+      summary,
+    });
+  }
+
+  if (report.senderAuth) {
+    const f = report.senderAuth;
+    let summary: string;
+    if (f.status === "ok") {
+      summary = `SPF=${f.spf ?? "?"} DKIM=${f.dkim ?? "?"} DMARC=${f.dmarc ?? "?"}`;
+    } else {
+      summary = `判定不可 (${f.errorMessage ?? "unknown"})`;
+    }
+    rows.push({
+      source: "senderAuth",
+      emoji: "📧",
+      label: "認証",
+      summary,
+    });
+  }
+
+  if (report.knownScams) {
+    const f = report.knownScams;
+    let summary: string;
+    if (f.status === "ok") {
+      summary = (f.matches?.length ?? 0) > 0
+        ? `${f.matches!.length} 件の類似手口`
+        : "該当なし";
+    } else {
+      summary = `判定不可 (${f.errorMessage ?? "unknown"})`;
+    }
+    rows.push({
+      source: "knownScams",
+      emoji: "🔍",
+      label: "既知手口",
+      summary,
+    });
+  }
+
+  if (report.officialAlerts) {
+    const f = report.officialAlerts;
+    let summary: string;
+    if (f.status === "ok") {
+      summary = (f.matches?.length ?? 0) > 0
+        ? `${f.matches!.length} 件の注意喚起`
+        : "該当なし";
+    } else {
+      summary = `判定不可 (${f.errorMessage ?? "unknown"})`;
+    }
+    rows.push({
+      source: "officialAlerts",
+      emoji: "📢",
+      label: "公的注意喚起",
+      summary,
+    });
+  }
+
+  return rows;
+}
+
+function InvestigationSection({
+  investigation,
+  bonus,
+}: {
+  investigation: InvestigationReport | null | undefined;
+  bonus: InvestigationBonus | undefined;
+}) {
+  if (!investigation) {
+    return (
+      <div className="mt-5 rounded border border-zinc-200 bg-zinc-50 px-4 py-3 text-xs text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900/40">
+        調査未実施
+      </div>
+    );
+  }
+
+  const rows = rowsFromInvestigation(investigation);
+  if (rows.length === 0 && !investigation.truncated) {
+    return null;
+  }
+
+  // Map source → bonus points for quick lookup. Missing source ⇒ no points.
+  const pointsBySource = new Map<BonusSource, number>(
+    (bonus?.items ?? []).map((item) => [item.source, item.points]),
+  );
+  const total = bonus?.total ?? 0;
+  const capped = bonus?.capped ?? false;
+
+  return (
+    <div className="mt-5 rounded border border-zinc-200 bg-zinc-50 px-4 py-3 dark:border-zinc-700 dark:bg-zinc-900/40">
+      <div className="mb-2 flex items-baseline gap-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+        <span>調査結果</span>
+        {total > 0 && (
+          <span className="font-mono normal-case tracking-normal text-zinc-700 dark:text-zinc-300">
+            +{total}
+            {capped ? " (上限到達)" : ""}
+          </span>
+        )}
+      </div>
+      {rows.length > 0 && (
+        <ul className="space-y-1.5 text-sm leading-6 text-zinc-700 dark:text-zinc-300">
+          {rows.map((row) => {
+            const points = pointsBySource.get(row.source);
+            return (
+              <li
+                key={row.source}
+                className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"
+              >
+                <span aria-hidden className="text-base leading-none">
+                  {row.emoji}
+                </span>
+                <span className="font-medium">{row.label}:</span>
+                <span className="min-w-0 flex-1 break-words">
+                  {row.summary}
+                </span>
+                {typeof points === "number" && points > 0 && (
+                  <span className="font-mono text-xs text-zinc-500">
+                    +{points}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {investigation.truncated && (
+        <p
+          className={`text-xs text-zinc-500 ${
+            rows.length > 0 ? "mt-3" : ""
+          }`}
+        >
+          ※ 調査が時間切れで一部のみ完了しました
+        </p>
       )}
     </div>
   );
