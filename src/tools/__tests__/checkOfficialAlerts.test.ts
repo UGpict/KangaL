@@ -1,97 +1,68 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  __clearCacheForTests,
-  checkOfficialAlerts,
-} from "../checkOfficialAlerts";
+import { describe, expect, it } from "vitest";
+import { checkOfficialAlerts } from "../checkOfficialAlerts";
 
-const mockFetch = vi.fn();
-
-// All institution names below are fictional per CLAUDE.md.
-const SAMPLE_RSS = `<?xml version="1.0" encoding="UTF-8"?>
-<rdf:RDF xmlns="http://purl.org/rss/1.0/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-  <item rdf:about="https://example.com/1">
-    <title><![CDATA[カンガル銀行を装う詐欺メールに注意]]></title>
-    <link>https://example.com/1</link>
-  </item>
-  <item rdf:about="https://example.com/2">
-    <title>クマ運輸の配送通知を装う詐欺</title>
-    <link>https://example.com/2</link>
-  </item>
-  <item rdf:about="https://example.com/3">
-    <title>無関係なお知らせ</title>
-    <link>https://example.com/3</link>
-  </item>
-</rdf:RDF>`;
-
-beforeEach(() => {
-  vi.stubGlobal("fetch", mockFetch);
-  mockFetch.mockReset();
-  __clearCacheForTests();
-});
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-function rssResponse(xml: string) {
-  return {
-    ok: true,
-    text: async () => xml,
-  };
-}
-
-describe("checkOfficialAlerts", () => {
+describe("checkOfficialAlerts (static snapshot)", () => {
   it("returns ok:false (no_keywords) when no usable keywords are passed", async () => {
-    const result = await checkOfficialAlerts({ keywords: ["", "   "] });
+    const result = await checkOfficialAlerts({ keywords: [] });
     expect(result).toEqual({ ok: false, reason: "no_keywords" });
-    expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it("returns matching items by keyword inclusion in title", async () => {
-    mockFetch.mockResolvedValueOnce(rssResponse(SAMPLE_RSS));
+  it("filters out empty / whitespace keywords and treats the rest as no_keywords if all are blank", async () => {
+    const result = await checkOfficialAlerts({ keywords: ["", "   "] });
+    expect(result).toEqual({ ok: false, reason: "no_keywords" });
+  });
+
+  it("returns matches whose title contains a fictional financial-institution keyword", async () => {
     const result = await checkOfficialAlerts({ keywords: ["カンガル銀行"] });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.matches).toEqual([
-        {
-          title: "カンガル銀行を装う詐欺メールに注意",
-          link: "https://example.com/1",
-        },
-      ]);
+      expect(result.matches.length).toBeGreaterThan(0);
+      for (const m of result.matches) {
+        expect(m.title).toContain("カンガル銀行");
+        expect(m.link.startsWith("snapshot://officialAlerts/")).toBe(true);
+      }
     }
   });
 
-  it("returns empty matches when no keyword hits any item", async () => {
-    mockFetch.mockResolvedValueOnce(rssResponse(SAMPLE_RSS));
-    const result = await checkOfficialAlerts({ keywords: ["まったく無関係"] });
+  it("returns matches that align with the BEC routing path (取引先 keyword)", async () => {
+    // This is the path exercised by msg-003 (authority.impersonates =
+    // business_partner). Verifies the static dataset actually supports the
+    // BEC scenario the demo depends on.
+    const result = await checkOfficialAlerts({ keywords: ["取引先"] });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.matches.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("returns empty matches when no keyword hits any alert", async () => {
+    const result = await checkOfficialAlerts({
+      keywords: ["zzz-this-substring-should-not-occur-anywhere"],
+    });
     expect(result).toEqual({ ok: true, matches: [] });
   });
 
-  it("serves cached items on second call (no second fetch)", async () => {
-    mockFetch.mockResolvedValueOnce(rssResponse(SAMPLE_RSS));
-    const first = await checkOfficialAlerts({ keywords: ["カンガル銀行"] });
-    const second = await checkOfficialAlerts({ keywords: ["クマ運輸"] });
-    expect(first.ok).toBe(true);
-    expect(second.ok).toBe(true);
-    if (second.ok) {
-      expect(second.matches.map((m) => m.title)).toEqual([
-        "クマ運輸の配送通知を装う詐欺",
-      ]);
+  it("caps results at 5 matches even for a very common substring", async () => {
+    // `を装う` appears in nearly every alert title — would be 20+ matches
+    // without the cap.
+    const result = await checkOfficialAlerts({ keywords: ["を装う"] });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.matches.length).toBeLessThanOrEqual(5);
+      expect(result.matches.length).toBe(5);
     }
-    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
-  it("returns ok:false on HTTP error", async () => {
-    mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
-    const result = await checkOfficialAlerts({ keywords: ["カンガル銀行"] });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("http_500");
-  });
-
-  it("returns ok:false when fetch rejects", async () => {
-    mockFetch.mockRejectedValueOnce(new Error("timeout"));
-    const result = await checkOfficialAlerts({ keywords: ["カンガル銀行"] });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("timeout");
+  it("multiple keywords: returns matches if ANY keyword hits a title (OR semantics)", async () => {
+    const result = await checkOfficialAlerts({
+      keywords: ["カンガル銀行", "definitely-not-in-any-title"],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.matches.length).toBeGreaterThan(0);
+      for (const m of result.matches) {
+        expect(m.title).toContain("カンガル銀行");
+      }
+    }
   });
 });

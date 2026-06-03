@@ -1,14 +1,28 @@
-// Anti-phishing council news feed. SSRF guard: fetch target is hardcoded
-// `antiphishing.jp`. Keyword filtering is local — we do not follow any URLs
-// returned by the feed.
-//
-// SECURITY: text returned by this tool is external content (alert titles
-// and links). Callers passing the strings to a model must wrap them in an
-// <untrusted_input> envelope and treat as DATA, never as instruction.
+// Static snapshot of anti-phishing-council-style alerts. We deliberately
+// avoid live RSS fetching:
+//   - antiphishing.jp does not expose the URL we previously assumed (was
+//     404), and live scraping is fragile for a hackathon demo;
+//   - deterministic data keeps the demo reproducible (no flakiness from
+//     network or rate limits);
+//   - the SSRF surface shrinks to zero (no outbound calls at all).
+// Refresh path: edit src/data/officialAlerts.json and bump snapshotDate.
+// All institution names in the snapshot are fictional (CLAUDE.md).
+import rawAlerts from "@/data/officialAlerts.json";
 
-const ANTI_PHISHING_RSS = "https://www.antiphishing.jp/news/index.rdf";
-const DEFAULT_TIMEOUT_MS = 5000;
-const CACHE_TTL_MS = 60 * 60 * 1000;
+type AlertRecord = {
+  id: string;
+  title: string;
+  category: string;
+  date: string;
+};
+
+type AlertsFile = {
+  snapshotDate: string;
+  source: string;
+  alerts: AlertRecord[];
+};
+
+const SNAPSHOT: AlertsFile = rawAlerts as AlertsFile;
 const MAX_MATCHES = 5;
 
 export type AlertMatch = { title: string; link: string };
@@ -17,73 +31,14 @@ export type CheckOfficialAlertsResult =
   | { ok: true; matches: AlertMatch[] }
   | { ok: false; reason: string };
 
-// Instance-local cache. Same caveats as checkDomainAge: wiped on cold start,
-// not shared across scaled instances.
-let cachedItems: { value: AlertMatch[]; expiresAt: number } | null = null;
-
-export function __clearCacheForTests(): void {
-  cachedItems = null;
-}
-
-const TITLE_REGEX = /<title[^>]*>([\s\S]*?)<\/title>/;
-const LINK_REGEX = /<link[^>]*>([\s\S]*?)<\/link>/;
-
-function decodeXmlEntities(s: string): string {
-  return s
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, "&");
-}
-
-function stripCdata(s: string): string {
-  const m = s.match(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/);
-  return m ? m[1] : s;
-}
-
-function clean(raw: string): string {
-  return decodeXmlEntities(stripCdata(raw).trim());
-}
-
-function parseItems(xml: string): AlertMatch[] {
-  const items: AlertMatch[] = [];
-  for (const itemMatch of xml.matchAll(/<item[^>]*>([\s\S]*?)<\/item>/g)) {
-    const block = itemMatch[1];
-    const title = block.match(TITLE_REGEX)?.[1];
-    const link = block.match(LINK_REGEX)?.[1];
-    if (title && link) {
-      items.push({ title: clean(title), link: clean(link) });
-    }
-  }
-  return items;
-}
-
-async function loadItems(timeoutMs: number): Promise<AlertMatch[]> {
-  if (cachedItems && cachedItems.expiresAt > Date.now()) {
-    return cachedItems.value;
-  }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(ANTI_PHISHING_RSS, {
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      throw new Error(`http_${response.status}`);
-    }
-    const xml = await response.text();
-    const items = parseItems(xml);
-    cachedItems = { value: items, expiresAt: Date.now() + CACHE_TTL_MS };
-    return items;
-  } finally {
-    clearTimeout(timer);
-  }
+// Stable synthetic link so the AlertMatch shape stays satisfied. UI can
+// surface this as "snapshot://..." rather than render it as a real URL.
+function syntheticLink(id: string): string {
+  return `snapshot://officialAlerts/${id}`;
 }
 
 export async function checkOfficialAlerts(args: {
   keywords: string[];
-  timeoutMs?: number;
 }): Promise<CheckOfficialAlertsResult> {
   const keywords = (args.keywords ?? []).filter(
     (k) => typeof k === "string" && k.trim().length > 0,
@@ -91,14 +46,15 @@ export async function checkOfficialAlerts(args: {
   if (keywords.length === 0) {
     return { ok: false, reason: "no_keywords" };
   }
-  try {
-    const items = await loadItems(args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const matches = items
-      .filter((it) => keywords.some((k) => it.title.includes(k)))
-      .slice(0, MAX_MATCHES);
-    return { ok: true, matches };
-  } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-    return { ok: false, reason };
+  const matches: AlertMatch[] = [];
+  for (const alert of SNAPSHOT.alerts) {
+    if (keywords.some((k) => alert.title.includes(k))) {
+      matches.push({
+        title: alert.title,
+        link: syntheticLink(alert.id),
+      });
+      if (matches.length >= MAX_MATCHES) break;
+    }
   }
+  return { ok: true, matches };
 }

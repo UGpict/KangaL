@@ -1,0 +1,162 @@
+{
+  "snapshotDate": "2026-05-31",
+  "source": "fictional — synthetic dataset modelled on public anti-phishing-council alert formats (per CLAUDE.md: 架空名のみ)",
+  "alerts": [
+    {
+      "id": "ap-2026-001",
+      "title": "カンガル銀行を装うフィッシングメールにご注意ください",
+      "category": "financial",
+      "date": "2026-05-28"
+    },
+    {
+      "id": "ap-2026-002",
+      "title": "クマ証券のログイン情報を狙うフィッシングメール急増",
+      "category": "financial",
+      "date": "2026-05-22"
+    },
+    {
+      "id": "ap-2026-003",
+      "title": "ペンギン信用組合を騙る還付金通知メールに関する注意喚起",
+      "category": "financial",
+      "date": "2026-05-19"
+    },
+    {
+      "id": "ap-2026-004",
+      "title": "タスマニア銀行のセキュリティ通知を装うSMS詐欺",
+      "category": "financial",
+      "date": "2026-05-11"
+    },
+    {
+      "id": "ap-2026-005",
+      "title": "カンガル銀行の振込手続き再入力を促す偽メール",
+      "category": "financial",
+      "date": "2026-05-04"
+    },
+    {
+      "id": "ap-2026-006",
+      "title": "コアラ信託銀行を装う口座凍結通知メール",
+      "category": "financial",
+      "date": "2026-04-30"
+    },
+    {
+      "id": "ap-2026-007",
+      "title": "カンガル税務署を装う還付金請求メールに関する注意喚起",
+      "category": "government",
+      "date": "2026-05-26"
+    },
+    {
+      "id": "ap-2026-008",
+      "title": "ペンギン年金事務所を装う支給通知メールにご注意",
+      "category": "government",
+      "date": "2026-05-15"
+    },
+    {
+      "id": "ap-2026-009",
+      "title": "クマ警察を装う未払い罰金請求メール急増",
+      "category": "government",
+      "date": "2026-05-08"
+    },
+    {
+      "id": "ap-2026-010",
+      "title": "タスマニア入管を装うビザ更新通知メールに関する注意喚起",
+      "category": "government",
+      "date": "2026-04-22"
+    },
+    {
+      "id": "ap-2026-011",
+      "title": "取引先を装う振込先変更依頼メールに関する注意喚起",
+      "category": "business_partner",
+      "date": "2026-05-29"
+    },
+    {
+      "id": "ap-2026-012",
+      "title": "仕入先を装う緊急請求書メールに関する事例",
+      "category": "business_partner",
+      "date": "2026-05-20"
+    },
+    {
+      "id": "ap-2026-013",
+      "title": "顧客を装う返金請求書送付メールにご注意",
+      "category": "business_partner",
+      "date": "2026-05-13"
+    },
+    {
+      "id": "ap-2026-014",
+      "title": "仕入先を装う口座変更のお知らせメール急増",
+      "category": "business_partner",
+      "date": "2026-05-06"
+    },
+    {
+      "id": "ap-2026-015",
+      "title": "「経理部長より」を偽装する社内メール詐欺事例",
+      "category": "executive",
+      "date": "2026-05-24"
+    },
+    {
+      "id": "ap-2026-016",
+      "title": "CEOを装う緊急送金指示メールに関する注意喚起",
+      "category": "executive",
+      "date": "2026-05-17"
+    },
+    {
+      "id": "ap-2026-017",
+      "title": "役員を装う秘密プロジェクトの請求書承認依頼メール",
+      "category": "executive",
+      "date": "2026-04-26"
+    },
+    {
+      "id": "ap-2026-018",
+      "title": "カンガル運輸の不在通知を装うSMS詐欺事例",
+      "category": "delivery",
+      "date": "2026-05-30"
+    },
+    {
+      "id": "ap-2026-019",
+      "title": "クマヤマト便の再配達URLを装うSMSに関する注意喚起",
+      "category": "delivery",
+      "date": "2026-05-23"
+    },
+    {
+      "id": "ap-2026-020",
+      "title": "ペンギン宅配の配達料金未払い通知メール急増",
+      "category": "delivery",
+      "date": "2026-05-16"
+    },
+    {
+      "id": "ap-2026-021",
+      "title": "タスマニアエクスプレスを装う再配達メール詐欺",
+      "category": "delivery",
+      "date": "2026-05-09"
+    },
+    {
+      "id": "ap-2026-022",
+      "title": "コアラポストの追跡番号確認を促すSMSにご注意",
+      "category": "delivery",
+      "date": "2026-04-28"
+    },
+    {
+      "id": "ap-2026-023",
+      "title": "ペンギン決済を装うアカウント凍結通知メール",
+      "category": "platform",
+      "date": "2026-05-27"
+    },
+    {
+      "id": "ap-2026-024",
+      "title": "カンガルサーチアカウントのパスワード更新要求メール急増",
+      "category": "platform",
+      "date": "2026-05-18"
+    },
+    {
+      "id": "ap-2026-025",
+      "title": "クマモバイル決済の不正利用通知メールに関する注意喚起",
+      "category": "platform",
+      "date": "2026-05-10"
+    },
+    {
+      "id": "ap-2026-026",
+      "title": "コアラペイの本人確認通知メールを装うフィッシング",
+      "category": "platform",
+      "date": "2026-04-24"
+    }
+  ]
+}

@@ -42,7 +42,10 @@ export type InvestigateInput = {
 // timeout (none today — model latency is bounded by Vertex). This budget
 // covers the full conversation: if Gemini and the tools collectively don't
 // finish in time, we return whatever findings the executors already recorded.
-const DEFAULT_BUDGET_MS = 15000;
+// Bumped from 15s → 25s after observing real Vertex latency: 4–5 turn
+// conversations with gemini-2.5-flash + tool execution can run 15–22s end
+// to end, especially when the model retries after an error response.
+const DEFAULT_BUDGET_MS = 25000;
 const DEFAULT_MAX_TURNS = 4;
 
 // Tool routing is driven by these descriptions — Gemini reads them and
