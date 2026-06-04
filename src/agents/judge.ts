@@ -38,6 +38,11 @@ function strengthOf(
       levers.authority.impersonates === "none"
         ? 0
         : Math.min(3, 1 + levers.authority.credibilityTricks.length),
+    // N2: incentive.type ("reward" vs "fear") and incentive.hook are
+    // intentionally NOT folded into the strength — strength uses intensity
+    // only. Differential weighting of fear vs reward (a known calibration
+    // gap) is deferred to a future design update; documented as a future
+    // task in design v0.5 §5.2.
     incentive: levers.incentive.intensity,
     callToAction: Math.max(
       0,
