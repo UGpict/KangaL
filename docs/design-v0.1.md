@@ -144,6 +144,26 @@ type AttackPattern = {
 - **⑤ personalization が差別化の核心。** `thread_injection` が BEC の「いつものやり取りに割り込む」を表現。
 - **⑥ isolation を独立レバーに。** 「内密に・相談するな」は正規依頼ではまず出ない → 単独で強い赤信号。
 - **channel はメタ情報。** 心理操作（レバー）と配送経路（channel）を分離。
+- **`matchKnownScams` のヒット閾値 = 0.5（N4）。** 6 レバーの主要 enum 値のうち 3 つ一致で「既知の手口に近い」とみなす。これ未満は事例DBが疎な時期にノイズが多すぎる。事例DBが厚くなったら 0.6〜0.67（4/6）まで上げる候補。実装定数は `KNOWN_SCAM_HIT_THRESHOLD`。
+
+### 5.2 調査ボーナスの加点設計【確定 / v0.5】
+
+レバー × 重みの素点に対して、調査ツールの危険シグナルを **加点のみ** で重ねる。減点は使わない（クリーンな調査結果が「安全証明」になってしまい、巧妙な攻撃で false negative が起きるのを避ける）。
+
+| ソース | 条件 | 加点 |
+|---|---|---|
+| `webRisk` | `urlReputation.threats.length > 0` | +15 |
+| `domainAge` | `ageDays < 7`（**新規ドメイン**） | +10 |
+| `senderAuth` | `spf / dkim / dmarc` のいずれかが `fail` | +8 |
+| `knownScams` | matches 件数 × +5 | +5 per match (cap +15) |
+| `officialAlerts` | matches 件数 ≥ 1 | +8 |
+| **全体上限** | 素点合計を **+25** で頭打ち | `capped: true` を返す |
+
+**+25 cap の意図**: 「ツール 1 本では決め手にならない / 強いシグナル 2 本で天井に到達」を表現するための工学的選択。例えば「Web Risk hit (15) + auth fail (8) = 23」で 25 弱に届く設計。これを上げれば加算的に振る舞う（複数シグナルが線形に積み上がる）。実装定数は `INVESTIGATION_BONUS_CAP`（`src/lib/weights.ts`）。
+
+**`+15 / +10 / +8` の相対バランス**: Web Risk は外部システムの一次判定なので最大。ドメイン年齢は決定打にはならないが新規ドメイン × authority impersonation で詐欺的中度が顕著に上がるため次点。auth fail は spoofing の必要条件であり加点だが、auth pass = 安全ではないので 8 程度に抑える。Known scams は 1 件で +5、最大 3 件 (+15) を上限とする。
+
+**UI 表現（M5）**: 素点合計が cap を超えたケース（capped=true）では、各ツール行の `points` は素点をそのまま見せる。ヘッダに「素点合計: X / 反映: Y」を表示し、ユーザーが行の合算と合計表示の乖離に困惑しないようにする。
 
 ---
 
