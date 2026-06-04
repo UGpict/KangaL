@@ -62,6 +62,10 @@ export type AttackPattern = {
 };
 
 // `kind` is both the discriminated-union tag and the ground-truth label used by §7 recall/FPR.
+// ScamSample (and BenignSample) carry message bodies for HUMAN-CURATED ground
+// truth only. The attack agent does NOT write completed fraud text into this
+// shape — that would violate the 道B invariant (§3) which says strategy lives
+// as AttackPattern lever settings, not as completed scam messages.
 export type ScamSample = { kind: "scam"; messageBody: string };
 export type BenignSample = { kind: "benign"; messageBody: string };
 export type Sample = ScamSample | BenignSample;
