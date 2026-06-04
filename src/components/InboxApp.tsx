@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { JudgeResponseBody } from "@/app/api/judge/route";
 import { SAMPLE_MESSAGES, type InboxMessage } from "@/lib/sampleMessages";
+import { summarizeBonus } from "@/lib/weights";
 import type {
   BonusSource,
   InvestigationBonus,
@@ -384,17 +385,23 @@ function InvestigationSection({
   const pointsBySource = new Map<BonusSource, number>(
     (bonus?.items ?? []).map((item) => [item.source, item.points]),
   );
-  const total = bonus?.total ?? 0;
-  const capped = bonus?.capped ?? false;
+  // M5: surface raw item sum alongside the capped total so a user reading
+  // 15+10+8+5+8 in the rows can see why the header says +25.
+  const { rawTotal, total, capped } = summarizeBonus(bonus);
 
   return (
     <div className="mt-5 rounded border border-zinc-200 bg-zinc-50 px-4 py-3 dark:border-zinc-700 dark:bg-zinc-900/40">
-      <div className="mb-2 flex items-baseline gap-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+      <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
         <span>調査結果</span>
         {total > 0 && (
           <span className="font-mono normal-case tracking-normal text-zinc-700 dark:text-zinc-300">
             +{total}
             {capped ? " (上限到達)" : ""}
+          </span>
+        )}
+        {capped && (
+          <span className="font-mono normal-case tracking-normal text-zinc-500">
+            素点合計: {rawTotal} / 反映: {total}
           </span>
         )}
       </div>

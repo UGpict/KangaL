@@ -144,3 +144,15 @@ export function computeInvestigationBonus(
   const total = Math.min(INVESTIGATION_BONUS_CAP, rawTotal);
   return { items, total, capped: rawTotal > INVESTIGATION_BONUS_CAP };
 }
+
+// UI helper for M5: surface BOTH the raw-item sum and the capped total so
+// the verdict card can explain why a row-by-row sum (e.g. 15+10+8+5+8 = 46)
+// is rendered as a +25 ceiling. Pure function so the UI snapshot doesn't
+// own the arithmetic and we can unit-test the relation.
+export function summarizeBonus(
+  bonus: InvestigationBonus | null | undefined,
+): { rawTotal: number; total: number; capped: boolean } {
+  if (!bonus) return { rawTotal: 0, total: 0, capped: false };
+  const rawTotal = bonus.items.reduce((sum, it) => sum + it.points, 0);
+  return { rawTotal, total: bonus.total, capped: bonus.capped };
+}
