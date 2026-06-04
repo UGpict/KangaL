@@ -361,6 +361,23 @@ function rowsFromInvestigation(report: InvestigationReport): ToolRow[] {
   return rows;
 }
 
+// M4 UI: per-reason copy so users can tell "still working" vs "real cap"
+// vs "something broke". null = clean exit, no note rendered.
+function truncationNote(
+  reason: InvestigationReport["truncatedReason"],
+): string {
+  switch (reason) {
+    case "budget":
+      return "※ 調査が時間切れで一部のみ完了しました (時間制限)";
+    case "max_turns":
+      return "※ 調査ステップ上限に到達したため一部のみ完了しました";
+    case "error":
+      return "※ 調査がエラーで中断しました";
+    default:
+      return "※ 調査が一部のみ完了しました";
+  }
+}
+
 function InvestigationSection({
   investigation,
   bonus,
@@ -437,7 +454,7 @@ function InvestigationSection({
             rows.length > 0 ? "mt-3" : ""
           }`}
         >
-          ※ 調査が時間切れで一部のみ完了しました
+          {truncationNote(investigation.truncatedReason)}
         </p>
       )}
     </div>
