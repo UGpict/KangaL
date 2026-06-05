@@ -136,7 +136,7 @@ type AttackPattern = {
     };
   };
 
-  detectionResult?: { detected: boolean; missedBy?: string; };
+  detectionResult?: { detected: boolean; missedBy?: ToolName[]; };  // missedBy = 検知に寄与しなかった調査ツール名（Task 8-B で ToolName[] に厳格化）
 };
 ```
 
@@ -145,6 +145,7 @@ type AttackPattern = {
 - **⑥ isolation を独立レバーに。** 「内密に・相談するな」は正規依頼ではまず出ない → 単独で強い赤信号。
 - **channel はメタ情報。** 心理操作（レバー）と配送経路（channel）を分離。
 - **`matchKnownScams` のヒット閾値 = 0.5（N4）。** 6 レバーの主要 enum 値のうち 3 つ一致で「既知の手口に近い」とみなす。これ未満は事例DBが疎な時期にノイズが多すぎる。事例DBが厚くなったら 0.6〜0.67（4/6）まで上げる候補。実装定数は `KNOWN_SCAM_HIT_THRESHOLD`。
+- **`missedBy: ToolName[]`（Task 8-B）。** `ToolName = "urlReputation" | "senderAuth" | "officialAlerts" | "domainAge" | "knownScams"`（`src/types/investigation.ts`）。生産（defender）は複数の死角を配列で持てる。消費（attacker.evolve の `DetectionFeedback.missedBy`）は単一方向への誘導なので単一文字列のまま据え置き、配列→単一の橋渡しは `loop.ts` が先頭1件を取り出して吸収する。
 
 ### 5.2 調査ボーナスの加点設計【確定 / v0.5】
 

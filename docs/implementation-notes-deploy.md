@@ -86,3 +86,42 @@ gcloud projects add-iam-policy-binding ai-bridging \
 
 - [x] ライブURLで「貼り付け → 返答」が本番で動く（認証付き `POST /api/judge` が Gemini 生成 reason 付き 200 を返すことを実機確認）
 - [x] シークレットがリポジトリに漏れていない（追跡ファイルは `.env.example` のみ。`git ls-files` で .env/credential/.pem/service-account の混入ゼロを確認。イメージも `.dockerignore` で `.env*` 除外）
+
+## T1 実行記録（PLAN-v2 T1 / 2026-06-05）
+
+目的: 本番の調査パイプラインを degrade ゼロにし、T2 の観測土台を綺麗にする。`docs/STATUS.md` §6 と `docs/PLAN-v2.md` T1 を正に実施。
+
+### 1. Firestore 権限付与
+
+- 付与前の状態確認: Firestore `(default)` DB 実在（`FIRESTORE_NATIVE` / location `asia-northeast1`、`createTime` 2026-05-14）。`firestore.googleapis.com` / `datastore.googleapis.com` 有効。compute SA に `datastore.user` バインディングは**無し**（= `7 PERMISSION_DENIED` の根本原因を確認）。
+- 実行（本ファイル上記 6項のコマンド）:
+  ```bash
+  gcloud projects add-iam-policy-binding ai-bridging \
+    --member="serviceAccount:649847191589-compute@developer.gserviceaccount.com" \
+    --role="roles/datastore.user" --condition=None
+  ```
+- 付与後確認: `get-iam-policy` で `roles/datastore.user` ← `649847191589-compute@developer.gserviceaccount.com` を確認。
+- 注意: Firestore DB は `asia-northeast1`、Cloud Run/Vertex は `us-central1`（越境）。今回は機能成立を確認。レイテンシ最適化は将来課題（ブロッカーではない）。
+
+### 2. DoD #1 — 本番 matchKnownScams が PERMISSION_DENIED を出さない 【達成】
+
+- 本番 `POST /api/judge`（ID トークン付き）で anchor `matchKnownScams` を実行。
+- 付与直後（IAM 伝播前）の1回目: `investigation.knownScams = {"status":"error","errorMessage":"7 PERMISSION_DENIED: Missing or insufficient permissions."}`。
+- 伝播後（付与から約20秒・リトライ1回目）: `investigation.knownScams = {"status":"ok","matches":[]}`。**PERMISSION_DENIED 解消を確認。** 以降の複数呼び出しでも `status:"ok"` で安定再現。
+- **V5（誤読防止・重要）**: `matches:[]`（0件）は正常。`attackPatterns` コレクションが空（書き戻し writer が未実装＝PLAN-v2 V1）のため。合格判定は「PERMISSION_DENIED が消えたか」で行い、matches 件数では判定しない。
+
+### 3. DoD #2 — 実ドメイン RDAP 本番取得可否の確定 【達成: 取得可能】
+
+- `checkDomainAge` は `https://rdap.org/domain/<domain>` を fetch（環境非依存・本番も同一エンドポイント）。
+- 実コード（`src/tools/checkDomainAge.ts`）を実ドメインで直接実行:
+  - `example.com` → `{ok:true, registeredAt:"1995-08-14T04:00:00Z", ageDays:11253}`
+  - `google.com` → `{ok:true, registeredAt:"1997-09-15T04:00:00Z", ageDays:10490}`
+  - **＝実ドメインで登録日・経過日数を返すことを確認。**
+- 本番 egress の確認: 本番 `/api/judge` に `.example`（予約TLD）URL を含む文を投げると `domainAge = {"status":"error","errorMessage":"http_403"}` を受信。**＝本番から rdap.org へ到達し HTTP 応答を受信できている**（http_403 は予約TLDの正常応答。`.test`/`.example` は RDAP 非対応で 403、STATUS §6 記載どおり）。
+- 補足（非ブロッカー）: 実ドメインURLを含む本番 `/api/judge` 1〜2回では Gemini ルーターが `checkDomainAge` を選ばないことがあった（ツール選択の非決定性。RDAP/egress/権限の問題ではない）。RDAP 取得可否は上記の直接実行＋本番 egress 確認で確定済み。
+- 補足: `urlReputation` は本番で `missing_api_key`（Web Risk 未配線・T1 スコープ外・想定どおり）。`officialAlerts` は `status:"ok"`。
+
+### 4. 結論
+
+- PLAN-v2 T1 の DoD 2件いずれも達成。anchor `matchKnownScams` は本番で degrade しない。実ドメイン RDAP は取得可能。
+- 残る本番 degrade は `urlReputation`(Web Risk 未配線・別タスク) のみ。T2 の観測土台としては、anchor が ok で回ることを確認できた。
