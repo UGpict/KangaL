@@ -38,6 +38,19 @@ export function fpr(judged: Judged[], threshold: number): Ratio {
   return flagged / benigns.length;
 }
 
+// Per-round dual-axis snapshot for the 攻防 loop (Task 8). `recall` is "did the
+// defender catch the scam(s) judged this round", `fpr` is "did it false-flag the
+// benign baseline". The demo story reads these across rounds: recall ギザギザ
+// (dips when the型 evolves, recovers as defense catches up) over a low-stable fpr.
+export type RoundMetrics = { recall: Ratio; fpr: Ratio };
+
+export function recordRound(judged: Judged[], threshold: number): RoundMetrics {
+  return {
+    recall: recall(judged, threshold),
+    fpr: fpr(judged, threshold),
+  };
+}
+
 export function coverage(
   patterns: AttackPattern[],
 ): { detected: number; total: number; ratio: Ratio } {
