@@ -9,6 +9,18 @@ export type BonusSource =
   | "knownScams"
   | "officialAlerts";
 
+// investigate が動的に呼ぶ 5 調査ツールの名前 union。InvestigationReport の
+// finding キー（urlReputation / senderAuth / officialAlerts / domainAge /
+// knownScams）と一致させる。missedBy（検知に寄与しなかったツール）の語彙はこの
+// union に閉じることで、攻撃側へ渡る値が必ず実在ツール名になることを型で担保する。
+// 注: BonusSource は加点ソースの語彙（"webRisk" を含む）で別物。
+export type ToolName =
+  | "urlReputation"
+  | "senderAuth"
+  | "officialAlerts"
+  | "domainAge"
+  | "knownScams";
+
 export type BonusItem = {
   source: BonusSource;
   points: number;
@@ -95,4 +107,8 @@ export type InvestigationReport = {
   // Surfaced in the UI so users can tell "still loading vs. real cap".
   truncatedReason: "max_turns" | "budget" | "error" | null;
   bonus: InvestigationBonus;
+  // 検知に寄与しなかった調査ツール名の配列（生産: defender、消費: attacker）。
+  // 攻撃側はこの「死角」を読んで次世代の変異方向を決める。算出ロジック本体は
+  // 別タスク（判定ロジックは触らない）。ここは契約フィールドの定義のみ。
+  missedBy?: ToolName[];
 };

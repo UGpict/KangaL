@@ -41,7 +41,8 @@ export const exampleAttackPattern: AttackPattern = {
   },
   detectionResult: {
     detected: false,
-    missedBy: "v0-defense",
+    // missedBy は ToolName[]（検知に寄与しなかった調査ツール名）。
+    missedBy: ["urlReputation"],
   },
 };
 

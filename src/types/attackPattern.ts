@@ -1,9 +1,18 @@
+import type { ToolName } from "./investigation";
+
 // 道B invariant: never add fields that store completed fraud text on AttackPattern
 // (e.g. craftedText, scriptTemplate). Strategy lives here as lever settings only.
 // See docs/design-v0.1.md §3, §5.
 export type AttackPattern = {
   id: string;
   generation: number;
+  // Lineage pointer set by attacker.evolve (parentId = prev.id). Undefined for
+  // a gen-1 root produced by generateAttackPattern. Lets the demo trace a型's
+  // ancestry through the 攻防 loop without storing the full chain.
+  parentId?: string;
+  // Free-text label for provenance only (e.g. "recon:financial,government").
+  // The literal "fallback-seed" marks a degraded pattern emitted when Gemini
+  // type-generation failed — consumers can detect that case by substring.
   sourceContext: string;
   channel: "email" | "sms" | "line" | "voice_deepfake" | "web";
 
@@ -58,7 +67,10 @@ export type AttackPattern = {
     };
   };
 
-  detectionResult?: { detected: boolean; missedBy?: string };
+  // missedBy は「検知に寄与しなかった調査ツール名」の配列（生産側）。InvestigationReport
+  // と同じ ToolName[] 語彙。evolve（消費側 DetectionFeedback.missedBy）は単一文字列で、
+  // loop が先頭1件を取り出して橋渡しする（src/agents/loop.ts）。
+  detectionResult?: { detected: boolean; missedBy?: ToolName[] };
 };
 
 // `kind` is both the discriminated-union tag and the ground-truth label used by §7 recall/FPR.
