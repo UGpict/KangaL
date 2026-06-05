@@ -10,6 +10,12 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* 役割ベースの色トークン（攻防メトリクス可視化・Task 8-C1）。
+     既存 InboxApp の Tailwind パレットと色相を合わせ、UI 乖離を防ぐ。 */
+  --color-brand: #2563eb; /* blue-600    : recall 折れ線 */
+  --color-warning: #d97706; /* amber-600   : FPR 折れ線 */
+  --color-action: #059669; /* emerald-600 : coverage 折れ線 */
 }
 
 @media (prefers-color-scheme: dark) {
