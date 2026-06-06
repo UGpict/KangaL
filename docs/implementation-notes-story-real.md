@@ -218,3 +218,55 @@ T2 を通して不変に保ってきた検知器本体（`matchKnownScams` の s
 3. **床落ちは救えない** — 新5件**全件が床落ち（bonus 上限+15 でも max 66<70）かつ matches 0**。`(ii)` は lever-score 床に触れないので捕捉不能のまま＝**「subtle 非executive BEC の支配的ゲートは床であって照合ではない」**を実証。→ 次手 **(iii) similarity 細粒度化 /(i) 床の見直し** の必要性が確定。
 
 **判定**: (ii) は設計通り機能（掃除＝偽flip除去、recall 不変、床落ちは不可侵）。新5件 recall 0 は (ii) の失敗ではない（(ii) は救済でなく掃除）。**物差し（旧 full-similarity オラクル）と新検知器の差分は厳密に exec-vishing-call 1件**で、これが「物差しが変わった（予測済み1件）」と「実力（新holdout素recall=0/5＝床落ち）」を明確に分離している。次の一歩は床/細粒度化＝(i)/(iii) に決まる。
+
+## 10. 汎化の再現検証: robust 2件は executive 固有か、能動構造一般か（2026-06-06）
+
+§8/§9 で観測された robust 2件（exec-portal-login / exec-app-install）は、攻撃側が書き戻した executive 署名に対し **cta（誘導手段）が違っても能動骨格（authority+personalization+isolation=secrecy）が一致**して捕まった＝「cta を跨いだ汎化」。これが **executive 系統固有の偶然**か、**能動構造一般の性質**かを切り分ける。recall 増や flip 数を狙うのではなく、この一点の解像度だけが目的。
+
+### 10.1 再現プローブ設計（検知器・seed を変えず、プローブ1本だけ追加）
+
+条件A（土俵に乗る）と条件B（ブラインド維持）の両立が要点。前回（§9.4 新5件）は全件床落ちで照合器の土俵に乗れず、再現を観測できなかった。
+
+- **条件A の精緻化**: 「床超え」ではなく **leverScore ∈ [55,69]（観測帯）**。<55 はボーナス上限でも 70 に届かず照合器が無力、≥70 は自己 flip で照合器が無関係になり帰属が壊れる。[55,69] でのみ **ボーナスが load-bearing** ＝ cta-crossing 汎化が観測可能。
+- **条件B の維持**: 帯は **狙う対象ではなく現実値の帰結**。脅威モデルの現実性だけで各レバーを決め、leverScore は事後に計算・報告する。
+- **追加プローブ `vendor-confidential-reauth`**（executive robust 骨格の *business_partner 鏡像*）: authority=business_partner+[reference_number,formal_tone] / personalization=targeted+thread_injection / **isolation=secrecy/1**（「経理を通さず内密に」= 実在 VEC の口止め）/ cta=input_credentials（vendor seed の transfer_money と意図的に変える＝cta-crossing）。per-lever 根拠は全て実在 VEC 手口であって corpus 報酬ではない。
+  - leverScore = **61**（`computeScore` で確認）＝帯内・自己 flip せず・ボーナス load-bearing。狙って 61 にしたのではなく現実値を入れたら帯に落ちた＝条件B の証拠。
+  - (authority×cta)=business_partner×input_credentials は seed 系統に無い（未到達担保・`main()` 構築不変条件で機械保証）。
+- **§4 予測（予測の紙）**: *frozen corpus* に対しては非hit（vendor 系統 corpus は isolation=none で能動3＝authority+personalization+cta、cta を跨ぐと一致能動は2のみ→2/6<0.5）。だが実走が当てるのは frozen ではなく **同 seed から非決定で育つ corpus**。vendor 系統がすり抜けラウンドで secrecy を獲得 persist すれば（seed 介入なしの偶発）3一致で hit しうる＝**寄せでない本物の再現**。それが起きるかを実測で確認する。
+
+### 10.2 3-run 結果（同条件・attacker のみ非決定・各 run 末で cleanup）
+
+確率的発現の主張を1サンプルで語らないため、診断と同じ「固定seed×複数run」で3回実走。
+
+| 観測 | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| bec(executive) secrecy persist | yes (r1-3) | yes (r1-3) | yes (r1-3) |
+| **vendor(business_partner) secrecy persist** | **yes (r5)** | no | no |
+| platform secrecy persist | yes (r7) | yes (r7) | yes (r7) |
+| exec-portal-login / exec-app-install | robust / robust | robust / robust | robust / robust |
+| **VEC probe `vendor-confidential-reauth`** | **robust flip (total 71)** | 非flip (1 match,+5,66) | 非flip (1 match,+5,66) |
+| exec-vishing-call（direct_channel 対照群） | 非flip | 非flip | 非flip |
+| holdout recall | 3/12 | 2/12 | 2/12 |
+
+- run 1 の VEC flip: top match=vendor secrecy doc（authority+personalization+isolation 共有・cta だけ違う＝**cta-crossing**、active一致=auth+pers+iso）+ platform secrecy doc（cta+personalization+isolation 共有・authority だけ違う＝authority-crossing）の **2 match・+10**。能動のみで total 71≥70 ＝ **robust**。
+- run 2/3 の非flip: vendor が secrecy を persist しなかったため cta-crossing 経路が消え、platform への authority-crossing 1 match（+5）だけが残り sub-threshold。
+
+### 10.3 メカニズム＝「secrecy 獲得ラウンド vs bonus 飽和ラウンド」のタイミング・レース
+
+bec と vendor の in-loop を並べると、executive=決定論的・非executive=確率的の理由が構造で説明できる:
+
+- **bec**: secrecy は **round 1 から存在（seed が持つ）**。rounds 1-3 は known-scam bonus が ramp 中（+0/+5/+10）で total 55/60/65<70 → 未検知 persist。**bonus 飽和（+15, round 4）の前に secrecy doc が3件 bank される → 毎回勝つ（3/3）**。
+- **vendor**: secrecy は **round 5 で初出**（evolve は personalization を先に上げ sig1→4、isolation は後回し）。その時 bonus は既に +15 飽和・leverScore も 51。total は飽和点ギリギリで、investigation bonus の非決定性が写真判定を決める（run 1: total 66<70 すり抜け persist／run 2,3: total 74≥70 検知・非persist）→ **1/3**。
+
+⇒ executive 偏りは **authority の意味論ではなく、レバー昇格順序における isolation の位置 × seed タイミング**。対照群 `exec-vishing-call`（executive だが isolation=direct_channel≠secrecy）が **3/3 非flip**＝駆動因が authority ではなく **能動 isolation=secrecy の一致**であることを締める。
+
+### 10.4 結論（3サンプルで主張と証拠が釣り合った）
+
+- cta-crossing 汎化は **executive 固有ではない**: vendor が run 1 で **seed なしで再現**＝機構は **lineage-agnostic**。robust 2件は偶然ではない。
+- ただし非executive の **発現は確率的**（vendor 1/3）。原因は §10.3 のタイミング・レースで、非executive は能動 isolation を evolve で後から獲得するため bonus 飽和と同着になる。
+- executive の堅牢性（3/3）は **seed タイミングの産物**で authority 意味論ではない。
+- **claim の精緻化**: 「能動構造（authority+personalization+isolation=secrecy）の cta-crossing 汎化は系統非依存。能動 isolation レバーが corpus に persist した系統で発現し、それが seed 由来（executive）なら決定論的に堅牢、evolve 後天獲得（vendor/platform）なら確率的」。
+
+### 10.5 なぜ VEC seed を足さなかったか（検証 vs 改善の分離）
+
+VEC seed（isolation=secrecy を gen1 化）を足せば vendor も決定論的に汎化するはず＝ **§10.3 から構造的に予測できる改善**。だが「再現を確かめる」ためにそれを足すのは **「再現が出るように母集団を改変する」＝検証ではなく改善**（T2-③ の寄せる汚染の corpus 版）になる。よって検証フェーズでは seed を変えず、現 corpus（既存3 seed）での確率的発現を実測した。VEC seed 追加は「executive 以外にも汎化を広げる」改善フェーズで、動機を明示して別途行う（「もともと汎化していた」ではなく「改善で広げた」と記録する）。

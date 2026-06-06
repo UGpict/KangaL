@@ -244,6 +244,46 @@ const HOLDOUTS: Holdout[] = [
     personalization: { level: "segmented", signals: ["real_name"] },
     isolation: { tactic: "direct_channel", intensity: 1 },
   }),
+
+  // ── T2-③ 汎化「再現」プローブ（2026-06-06 追加・1本） ─────────────────────────
+  // 目的: robust 2件（exec-portal-login / exec-app-install）が cta を跨いで捕まったのが
+  //   executive 系統固有の偶然か、能動構造一般の性質かを切り分ける。これは executive の
+  //   robust 骨格 = (authority 能動 + personalization=targeted + isolation=secrecy 能動) の
+  //   *鏡像を business_partner で* 作り、cta だけ vendor seed(transfer_money) と変えて
+  //   cta-crossing を試すプローブ。
+  //
+  // 各レバーの根拠は「corpus が報酬を与えるから」ではなく「実在の VEC(取引先メール侵害)の
+  //   標的型手口だから」:
+  //   - authority=business_partner + [reference_number, formal_tone]: 乗っ取ったスレッドで
+  //     請求番号を引用し正規取引を装う。VEC の定石。
+  //   - personalization=targeted + thread_injection: 特定取引へ名指しで割り込む。標的型の核心。
+  //   - isolation=secrecy/1: 「経理を通さず、入金まで内密に」。AP 詐欺の定番の弱い口止め。
+  //     intensity は文面の強さ（示唆程度=1）で決め、床(iso2→55)に乗せる目的では選ばない。
+  //   - cta=input_credentials/low: 「安全なポータルで新口座を確認」。vendor seed の
+  //     transfer_money と意図的に変える＝cta-crossing 試験。
+  //   leverScore は現実値の帰結として 61（帯[55,69]内・自己 flip せず・ボーナス load-bearing）。
+  //   狙って 61 に乗せたのではなく、現実値を入れたら帯に落ちた＝条件B(ブラインド)維持の証拠。
+  //
+  // (authority×cta)=business_partner×input_credentials は seed 系統に無い＝未到達担保
+  //   （vendor seed は ×transfer_money、platform seed の ×input_credentials は authority が別）。
+  //
+  // §4 予測（frozen corpus に対して）: vendor 系統 corpus は isolation=none(artifact) なので
+  //   能動は authority+personalization+cta の3。cta を跨ぐと probe と一致する能動は
+  //   authority+personalization の2のみ → 2/6 < 0.5 → 非hit。よって *frozen 前提では非hit が予測*。
+  //   実走が当てるのは frozen ではなく同 seed から非決定で新規に育つ corpus。vendor 系統が
+  //   今回すり抜けラウンドで secrecy を獲得し persist すれば（seed 介入なしの偶発）3一致で
+  //   hit しうる＝寄せでない本物の再現。それが起きるか否かを実測で確認する。
+  holdout("vendor-confidential-reauth", {
+    urgency: { tactic: "deadline", intensity: 1 },
+    authority: {
+      impersonates: "business_partner",
+      credibilityTricks: ["reference_number", "formal_tone"],
+    },
+    incentive: { type: "reward", hook: "refund", intensity: 0 },
+    callToAction: { action: "input_credentials", friction: "low" },
+    personalization: { level: "targeted", signals: ["thread_injection"] },
+    isolation: { tactic: "secrecy", intensity: 1 },
+  }),
 ];
 
 // ── 決定論ホールドアウト評価（Gemini 不使用） ──────────────────────────────
