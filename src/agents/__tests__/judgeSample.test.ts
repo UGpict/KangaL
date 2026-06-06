@@ -1,5 +1,5 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
-import { judgeSampleViaPipeline } from "@/agents/loop";
+import { judgeSampleDetailed, judgeSampleViaPipeline } from "@/agents/loop";
 import { evaluateSamples, getDetectionThreshold } from "@/lib/metrics";
 import type { AttackPattern, Sample } from "@/types/attackPattern";
 
@@ -147,6 +147,42 @@ describe("judgeSampleViaPipeline (T3 配線)", () => {
     });
 
     expect(result.score).toBe(0);
+    expect(investigate).not.toHaveBeenCalled();
+  });
+
+  it("judgeSampleDetailed: bonus 内訳を known-scam と外部調査に分離する（柱2 計器の素材）", async () => {
+    // 注入 investigate に knownScams 3件＋若いドメインを返させ、判定器の bonus を立てる。
+    const injected = vi.fn(async () => ({
+      truncated: false,
+      truncatedReason: null,
+      knownScams: { status: "ok", matches: [{}, {}, {}] },
+      domainAge: { status: "ok", domain: "x.example", ageDays: 2 },
+    }));
+    const detail = await judgeSampleDetailed(
+      { kind: "scam", messageBody: SCAM_BODY },
+      { investigate: injected as never },
+    );
+    expect(detail.leverScore).toBe(71); // computeScore(STRONG_SCAM_LEVERS)
+    expect(detail.knownScamBonusRaw).toBe(15); // min(15, 3*5)
+    expect(detail.otherInvestigationBonusRaw).toBe(10); // 若いドメイン +10
+    expect(detail.score).toBe(96); // min(100, 71 + min(25, 15+10))
+    expect(detail.perceivedLevers).toEqual(STRONG_SCAM_LEVERS);
+    expect(detail.degraded).toBe(false);
+  });
+
+  it("judgeSampleDetailed: degraded は全 0・investigate 不呼び出し", async () => {
+    const detail = await judgeSampleDetailed({
+      kind: "scam",
+      messageBody: DEGRADE_BODY,
+    });
+    expect(detail).toEqual({
+      score: 0,
+      degraded: true,
+      perceivedLevers: null,
+      leverScore: 0,
+      knownScamBonusRaw: 0,
+      otherInvestigationBonusRaw: 0,
+    });
     expect(investigate).not.toHaveBeenCalled();
   });
 

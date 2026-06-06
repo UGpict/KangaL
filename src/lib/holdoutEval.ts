@@ -1,0 +1,185 @@
+import type { AttackPattern } from "@/types/attackPattern";
+import { getDetectionThreshold } from "@/lib/metrics";
+import { INVESTIGATION_BONUS_CAP } from "@/lib/weights";
+
+// 柱2 の「計器」── 実物ホールドアウト評価の判定規約を *純関数で凍結* する。
+//
+// 凍結の目的（fishing 構造的封じ）: 4分類 attribution の定義・FPR 下界の出し方・
+// recall 生カウント規約・「伸びは known-scam 由来か」の counterfactual を、実物の
+// 数字を見る *前* にコード＋テストで確定しコミットする。実物が入ったら判定は
+// この凍結器から読み出すだけ＝結果を見てから metric をいじる余地を消す
+// （docs/HANDOFF.md §5-B、「凍結fixture＋変更を見ていない新holdout」をハーネス自身に適用）。
+//
+// この層に LLM・firestore・ネットワークは入らない（決定論＝テスト対象）。実 Gemini を
+// 通す signal 生産は runner（scripts/evalRealHoldout.ts）側＝ログで扱う。
+
+type Levers = AttackPattern["levers"];
+
+// 1サンプルの判定素材。runner が judge パイプライン（analyzeStructure→investigate→judge）
+// から組み立て、ここに渡す。レバー素点と bonus 内訳を *生の点* で持つ（cap 前）。
+export type SampleSignals = {
+  id: string;
+  kind: "scam" | "benign";
+  // analyzeStructure が失敗（Gemini 縮退）＝知覚そのものが成立せず。
+  degraded: boolean;
+  // 知覚されたレバー（degraded 時は null）。missed-perception 判定に使う。
+  perceivedLevers: Levers | null;
+  // 最終 0-100（runner が judge から取得＝ leverScore + capped bonus, ≤100）。
+  score: number;
+  // レバー素点（computeScore、isolation floor 込み・bonus 前）。
+  leverScore: number;
+  // bonus 生点（cap 25 前）。known-scam＝self-play corpus 由来、それ以外＝外部調査。
+  knownScamBonusRaw: number;
+  otherInvestigationBonusRaw: number;
+};
+
+// 4分類 attribution（HANDOFF §5-B.3）:
+//  - detected: score ≥ threshold。
+//  - missed-floored: 知覚は成立（攻撃骨格を抽出）したが score < threshold
+//      ＝床ゲートで取りこぼし。柱1(i) 床見直しの正しい動機。
+//  - missed-perception: analyzeStructure が攻撃骨格を抽出できず（素の良性レバー）。
+//      検知器以前の知覚失敗。
+//  - degraded: Gemini 失敗で解析縮退（別報告）。
+export type Attribution =
+  | "detected"
+  | "missed-floored"
+  | "missed-perception"
+  | "degraded";
+
+// 「知覚が攻撃骨格を見たか」の *構造述語*（チューニング閾値ではない＝凍結しても恣意性が低い）。
+// 良性メッセージにも CTA・軽い権威・リンクは出るので、それらでは true にしない。
+// 詐欺を詐欺たらしめる *能動的な強レバー* のいずれかが立っていれば「知覚成立」とする:
+//   - 孤立化（secrecy / bypass_approval / direct_channel ＝ none 以外）
+//   - 高強度 urgency（intensity ≥ 2）
+//   - 権威なりすまし（impersonates ≠ none）
+//   - 直接金銭/資格情報 CTA（transfer_money / input_credentials）
+//   - 狙い撃ち personalization（targeted、または個別シグナルあり）
+// これに当たらず score も床下なら、骨格を *見ていない*＝missed-perception。
+export function isPerceivedAttack(levers: Levers): boolean {
+  return (
+    levers.isolation.tactic !== "none" ||
+    levers.urgency.intensity >= 2 ||
+    levers.authority.impersonates !== "none" ||
+    levers.callToAction.action === "transfer_money" ||
+    levers.callToAction.action === "input_credentials" ||
+    levers.personalization.level === "targeted" ||
+    levers.personalization.signals.length > 0
+  );
+}
+
+export function classifyAttribution(
+  s: SampleSignals,
+  threshold: number,
+): Attribution {
+  if (s.degraded) return "degraded";
+  if (s.score >= threshold) return "detected";
+  if (s.perceivedLevers && isPerceivedAttack(s.perceivedLevers))
+    return "missed-floored";
+  return "missed-perception";
+}
+
+// bonus 合算は判定器と同じ cap を再現（cap 後の値で counterfactual を測る）。
+function cappedBonus(knownScamRaw: number, otherRaw: number): number {
+  return Math.min(INVESTIGATION_BONUS_CAP, knownScamRaw + otherRaw);
+}
+
+function scoreFrom(leverScore: number, knownScamRaw: number, otherRaw: number): number {
+  return Math.min(100, leverScore + cappedBonus(knownScamRaw, otherRaw));
+}
+
+// 検出サンプルが「何で検出できたか」の counterfactual 内訳。
+// warm の recall 増が self-play corpus（known-scam bonus）由来か、外部調査由来か、
+// レバー素点だけで足りたかを切り分ける（self-play 貢献の過大評価を防ぐ・§5-B.3）。
+export type DetectionDrivers = {
+  // レバー素点だけで閾値到達（bonus 不要）。
+  leverAlone: number;
+  // known-scam bonus を外すと床下に落ちる＝corpus 依存の検出。
+  dependsOnKnownScam: number;
+  // 外部調査 bonus を外すと床下に落ちる＝調査依存の検出。
+  dependsOnInvestigation: number;
+};
+
+export type BenignDifficulty = "easy" | "mixed";
+
+export type HoldoutSummary = {
+  threshold: number;
+  // recall は生カウント（小標本では率に丸めない・§5-B.3）。
+  scamTotal: number;
+  detected: number;
+  byClass: Record<Attribution, number>; // scam 集合のみ
+  drivers: DetectionDrivers;
+  // FPR も生カウント。easy-only benign では真の FPR の *下界*（hard を入れれば上がる）。
+  benignTotal: number;
+  falseFlagged: number;
+  fprIsLowerBound: boolean;
+  smallSample: boolean; // n < SMALL_SAMPLE_N → 率でなく X/n で語る合図。
+};
+
+// 「点で率を出さず X/n で語る」境界。n がこの未満なら小標本扱い（§5-B.3, n≈20）。
+export const SMALL_SAMPLE_N = 30;
+
+export function summarizeHoldout(
+  signals: SampleSignals[],
+  opts: { threshold?: number; benignDifficulty: BenignDifficulty },
+): HoldoutSummary {
+  const threshold = opts.threshold ?? getDetectionThreshold();
+
+  const scams = signals.filter((s) => s.kind === "scam");
+  const benigns = signals.filter((s) => s.kind === "benign");
+
+  const byClass: Record<Attribution, number> = {
+    detected: 0,
+    "missed-floored": 0,
+    "missed-perception": 0,
+    degraded: 0,
+  };
+  const drivers: DetectionDrivers = {
+    leverAlone: 0,
+    dependsOnKnownScam: 0,
+    dependsOnInvestigation: 0,
+  };
+
+  for (const s of scams) {
+    const cls = classifyAttribution(s, threshold);
+    byClass[cls] += 1;
+    if (cls !== "detected") continue;
+    if (s.leverScore >= threshold) drivers.leverAlone += 1;
+    // counterfactual: その bonus 源を 0 にしたら床下に落ちるか。
+    if (scoreFrom(s.leverScore, 0, s.otherInvestigationBonusRaw) < threshold)
+      drivers.dependsOnKnownScam += 1;
+    if (scoreFrom(s.leverScore, s.knownScamBonusRaw, 0) < threshold)
+      drivers.dependsOnInvestigation += 1;
+  }
+
+  const falseFlagged = benigns.filter((b) => b.score >= threshold).length;
+
+  return {
+    threshold,
+    scamTotal: scams.length,
+    detected: byClass.detected,
+    byClass,
+    drivers,
+    benignTotal: benigns.length,
+    falseFlagged,
+    fprIsLowerBound: opts.benignDifficulty === "easy",
+    smallSample: scams.length < SMALL_SAMPLE_N,
+  };
+}
+
+// BEFORE(cold) → AFTER(warm) の差分。伸びの解釈は drivers と併読する。
+export type HoldoutDelta = {
+  before: HoldoutSummary;
+  after: HoldoutSummary;
+  detectedDelta: number; // after.detected - before.detected（生カウント差）
+};
+
+export function compareHoldout(
+  before: HoldoutSummary,
+  after: HoldoutSummary,
+): HoldoutDelta {
+  return {
+    before,
+    after,
+    detectedDelta: after.detected - before.detected,
+  };
+}

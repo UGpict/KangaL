@@ -6,7 +6,7 @@ import {
 } from "@/agents/attacker";
 import { analyzeStructure } from "@/agents/analyzeStructure";
 import { investigate, type InvestigateInput } from "@/agents/investigate";
-import { judge } from "@/agents/judge";
+import { computeScore, judge } from "@/agents/judge";
 import { assertDemoMode } from "@/lib/demoMode";
 import { upsertAttackPattern } from "@/lib/firestore";
 import {
@@ -85,18 +85,60 @@ export type InvestigateFn = (
   input: InvestigateInput,
 ) => Promise<InvestigationReport>;
 
-export async function judgeSampleViaPipeline(
+// 柱2 計器（holdoutEval）に渡す判定素材。score だけでなくレバー素点と bonus 内訳
+// （known-scam＝self-play corpus 由来 / それ以外＝外部調査）を生点で返す。これにより
+// 評価器側が「warm の伸びが corpus 由来か調査由来か」を counterfactual で切り分けられる。
+export type SampleJudgeDetail = {
+  score: number;
+  degraded: boolean;
+  perceivedLevers: AttackPattern["levers"] | null;
+  leverScore: number;
+  knownScamBonusRaw: number;
+  otherInvestigationBonusRaw: number;
+};
+
+export async function judgeSampleDetailed(
   sample: Sample,
   deps: { investigate?: InvestigateFn } = {},
-): Promise<{ score: number }> {
+): Promise<SampleJudgeDetail> {
   const investigateFn = deps.investigate ?? investigate;
   const analysis = await analyzeStructure(sample.messageBody);
-  if (analysis.degraded) return { score: 0 };
+  if (analysis.degraded) {
+    return {
+      score: 0,
+      degraded: true,
+      perceivedLevers: null,
+      leverScore: 0,
+      knownScamBonusRaw: 0,
+      otherInvestigationBonusRaw: 0,
+    };
+  }
   const investigation = await investigateFn({
     message: sample.messageBody,
     levers: analysis.levers,
   });
-  const { score } = await judge(analysis.levers, investigation);
+  const result = await judge(analysis.levers, investigation);
+  let knownScamBonusRaw = 0;
+  let otherInvestigationBonusRaw = 0;
+  for (const item of result.investigationBonus.items) {
+    if (item.source === "knownScams") knownScamBonusRaw += item.points;
+    else otherInvestigationBonusRaw += item.points;
+  }
+  return {
+    score: result.score,
+    degraded: false,
+    perceivedLevers: analysis.levers,
+    leverScore: computeScore(analysis.levers),
+    knownScamBonusRaw,
+    otherInvestigationBonusRaw,
+  };
+}
+
+export async function judgeSampleViaPipeline(
+  sample: Sample,
+  deps: { investigate?: InvestigateFn } = {},
+): Promise<{ score: number }> {
+  const { score } = await judgeSampleDetailed(sample, deps);
   return { score };
 }
 
