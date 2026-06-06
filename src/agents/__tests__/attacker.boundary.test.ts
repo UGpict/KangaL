@@ -23,8 +23,9 @@ const ENTRY = resolve(SRC, "agents", "attacker.ts");
 
 // 攻撃側に現れてはならない指定子・モジュール（大小無視）。
 // - firestore: 永続化層（upsert/list、実物コレクションへの唯一の口）。
-// - holdout / realScamHoldout: 実物評価データの reader（まだ存在しないが先回りで封じる）。
-const FORBIDDEN = /firestore|holdout|realscamholdout/i;
+// - holdout / realScamHoldout / realBenignHoldout: 実物評価データ（scam・benign）の reader。
+//   /holdout/ で両者とも捕まるが、reader 名を明示列挙して意図を残す（誤改名への保険）。
+const FORBIDDEN = /firestore|holdout|realscamholdout|realbenignholdout/i;
 
 const SPECIFIER_PATTERNS = [
   /\bimport\s+(?:type\s+)?[^"';]*?from\s*["']([^"']+)["']/g,

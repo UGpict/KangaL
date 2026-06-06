@@ -98,3 +98,17 @@ export type SampleProvenance = {
 
 // 実物 scam = 詐欺本文 + provenance。judgeSample（T3 配線済み実 judge パス）で評価する。
 export type RealScamSample = ScamSample & { provenance: SampleProvenance };
+
+// 柱2 道A: benign ホールドアウトの「効き目」帯。FPR は *帯別に* 報告する（pool 禁止）。
+//  - easy:      制度・銀行帯の本物通知（レバーが立たない）。床下げの安全性確認用 control。
+//               この帯の FPR は楽観側＝真の FPR の *下界*（fprIsLowerBound=true）。
+//  - effective: 商用帯の本物（締切/行動要求/行動 URL を備える）。床下げで FP が集中する
+//               ストレッサー。この帯の FPR は保守側＝下界扱いにしない（fprIsLowerBound=false）。
+export type BenignDifficulty = "easy" | "effective";
+
+// 実物 benign = 良性本文 + provenance + 帯ラベル。scam と同じ provenance 規律
+// （捏造禁止・出所必須）。realScamHoldout とは別モジュール・別コレクションに置く。
+export type RealBenignSample = BenignSample & {
+  provenance: SampleProvenance;
+  benignDifficulty: BenignDifficulty;
+};

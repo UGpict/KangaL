@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed:benign": "tsx scripts/seedBenignSamples.ts",
-    "seed:holdout": "tsx scripts/seedRealHoldout.ts"
+    "seed:holdout": "tsx scripts/seedRealHoldout.ts",
+    "seed:holdout-benign": "tsx scripts/seedRealBenignHoldout.ts"
   },
   "dependencies": {
     "@google-cloud/firestore": "^8.6.0",
