@@ -68,11 +68,8 @@
 
 | 項目 | 影響範囲 | メモ |
 |---|---|---|
-| **Firestore `datastore.user` 未付与** | **anchor が本番で常時 degrade**。`matchKnownScams`→`listAttackPatterns`(firestore)が本番で `7 PERMISSION_DENIED`（デプロイ実機で確認）。毎回呼ぶ anchor が死ぬと防御パイプライン全体の挙動確認が濁る。 | 02-3 着手前に実行SAへ `roles/datastore.user` 付与＋Firestore有効化（コマンドは `implementation-notes-deploy.md`）。ローカルtestはfirestoreをmockしているため緑。 |
 | **Web Risk 未配線** | `urlReputation` が本番で常時 `missing_api_key`。URL評価が効かない。 | 骨格スコープで意図的に未配線。Secret Manager 経由の投入手順は `implementation-notes-deploy.md`。 |
-| **`judgeSample` placeholder** | サンプルベースの recall/FPR が今は動かない（`score:0`固定）。 | Phase 3 で message-body 判定パスを配線。 |
 | **外部ホールドアウト物理分離** | recall の自家中毒回避（計画の核） | **未確認**。`seedBenignSamples` は存在するが分離設計は未読。 |
-| **本番 RDAP 成否（実ドメイン）** | `domainAge` | **未確認**。デプロイ確認では `.test` ドメインで `http_403`（RDAP非対応TLD、想定どおり）。実ドメインでの本番取得可否は未テスト。 |
 | DEMO_MODE 本番未設定 | 攻撃/デモ機能を無効化（意図どおり） | blocker ではないが運用注意。本番 env に DEMO_MODE を足さない。 |
 
 ---
