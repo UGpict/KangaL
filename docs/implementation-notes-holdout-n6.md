@@ -52,3 +52,30 @@ holdout(scam)=6 / benign=0
   - (a) 真に床下＝何回回しても70に届かない構造的取りこぼし。複数 run で 0/K か K/K に張り付く。→ 床を下げる／投資ボーナス寄与を上げる対象。
   - (b) 境界ジッタ＝70 上下を確率的に跨ぐ。複数 run で検出率 0.5 付近。→ 床を下げても跨ぐ位置が下にずれるだけで recall は安定しない＝分散の問題。決定論化／スコア安定化で手当て。
 - (a)/(b) の頭数割りが、道A を「床を下げる」にするか「分散を締める」にするかを決める。**K-run 無しで床を下げると (b) のサンプルで偽の改善を見て過学習する。**
+
+## 6. K-run 実測（K=10・investigation 各サンプル1ドロー凍結・threshold=70）
+
+事前固定 K=10（結果を見て延長しない＝分布の事後いじり禁止）。`scripts/evalRealHoldout.ts --freeze-investigation`、`KRUN=10`。investigation を各サンプル live で1回だけ引いて固定し、judge を10回（analyzeStructure＝レバー知覚だけが run 間で動く）。全件 knownScamBonus=0＝ホールドアウト全体が dependsOnKnownScam=false サブセット＝per-sample 検出率がそのまま主軸数値。
+
+| サンプル | detRate | 分類 | scores | spread | 中心 |
+|---|---|---|---|---|---|
+| antiphishing-nenkin-paypay | 5/10 | 境界ジッタ(b) | 78,71,65,90,90,71,65,67,65,65 | 25 | ~70 |
+| rakuten-card-saisai | 5/10 | 境界ジッタ(b) | 78,75,75,61,61,80,61,80,69,43 | 37 | ~68 |
+| etax-shotokuzei | 0/10 | 床下(a) | 65,67,61,61,61,53,65,61,65,65 | 14 | ~62 |
+| smbc-vpoint-expiry | 0/10 | 床下(a) | 61×8,53,61 | 8 | 61 |
+| amazon-prime | 0/10 | 床下(a) | 43,45,35,53,45,49,49,69,63,55 | 34 | ~50 |
+| apple-id-payment-fail | 0/10 | 床下(a) | 39,35,35,41,41,55,45,41,61,51 | 26 | ~44 |
+
+### live Δ を K-run が説明しきる
+live の2検出（BEFORE）＝(b)の年金・楽天そのもの。両者 ~0.5 で跨ぐので BEFORE detected=2（両方表）→ AFTER detected=1（片方）は coin-flip で一致。(a)4件は K-run でも 0/10＝live でも常時床下。**Δ=−1 が境界ジッタである証明が独立に取れた**（investigation 凍結＝lever-score 分散だけ残した条件でも同じ2件だけが跨ぐ）。
+
+### 道Aの的（3層に割れる）
+1. **境界ジッタ(b)＝年金・楽天**: 中心 ~68-70。閾値 60 で年金 10/10・楽天 9/10 と安定検出側へ寄る。ただし分散は残る（楽天 spread=37）＝床下げ＋決定論化/安定化の併用が筋。
+2. **床際(a)＝etax・smbc-vpoint**: 中心 61-62・spread 小。構造的に70直下で安定＝純粋な「床の高さ」問題。閾値 60 で etax 9/10・smbc 10/10。**床を下げれば素直に回収できる本体。**
+3. **深い(a)＝amazon・apple**: 中心 44-50・spread 大。閾値 60 でも amazon 2/10・apple 1/10＝**床いじりで救えない真の検知ギャップ**。両者とも怪しい URL 保有（apple=ettiqyn.com / amazon=profileslate.com）＝investigation（URL レピュテーション）寄与を上げるのが床と別系統の手当て候補。amazon は同一固定文で素点 35↔69 と暴れる＝知覚不安定も併発。
+
+→ **道A=床 70→~60 は (b)2件＋床際(a)2件の計4件を回収する正当手。** だが amazon・apple は床問題でなく知覚/レバー/investigation 側の別課題。
+
+### 但し書き（2点）
+- 凍結ドローのバイアス: 検出率の絶対値は investigation 1ドローに依存。amazon/apple が「真に深い」か「凍結ドローで URL bonus を引けなかった」かはこの run では分離不能（investigation 分散込みの非凍結多重 run が要る）。(a)/(b) の相対判定は lever-score 分散が決めるので有効。
+- K-run 出力に otherInvestigationBonus を載せていない（knownScamBonus のみ）。amazon/apple の低スコアに investigation bonus がどれだけ効いたか分解できない。次の K-run でこの列を足す（今回は事後再ロール回避のため追加 run はしない）。

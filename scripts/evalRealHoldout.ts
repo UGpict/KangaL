@@ -22,7 +22,13 @@
 process.env.DEMO_MODE = process.env.DEMO_MODE ?? "true";
 
 import { runLoop } from "@/agents/loop";
-import { judgeSampleDetailed, type SampleJudgeDetail } from "@/agents/judgeSample";
+import {
+  judgeSampleDetailed,
+  type SampleJudgeDetail,
+  type InvestigateFn,
+} from "@/agents/judgeSample";
+import { analyzeStructure } from "@/agents/analyzeStructure";
+import { investigate } from "@/agents/investigate";
 import { listBenignSamples } from "@/lib/firestore";
 import { listRealScamHoldout } from "@/lib/realScamHoldout";
 import {
@@ -90,30 +96,58 @@ function printSummary(label: string, s: HoldoutSummary): void {
 async function freezeInvestigationKRun(
   labeled: LabeledSample[],
   k: number,
+  threshold: number,
 ): Promise<void> {
-  // within-condition（固定コーパス）: investigate を1回ずつ凍結し、judge を K 回。
-  // 非決定は analyzeStructure（知覚）だけに絞られる＝missed-perception の安定性観測。
-  console.log(`\n=== K-run（--freeze-investigation, k=${k}, 固定コーパス）===`);
+  // within-condition（固定コーパス）: investigate を *実物 report* で1回だけ凍結し、
+  // judge を K 回。非決定は analyzeStructure（知覚＝レバー素点）だけに絞られる。
+  //
+  // 狙い（道A の的を割る）: per-sample 検出率で2つの「<threshold」を区別する。
+  //   (a) 床下      = 0/K か K/K に張り付く＝構造的取りこぼし（床/投資ボーナスの対象）。
+  //   (b) 境界ジッタ = 中間（~0.5）＝threshold 上下を確率的に跨ぐ＝分散の問題
+  //                    （床を下げても跨ぐ位置が下にずれるだけ。決定論化/安定化で手当て）。
+  // 主軸は dependsOnKnownScam=false サブセットの検出率（knownScamBonus を併記して確認）。
+  console.log(`\n=== K-run（--freeze-investigation, k=${k}, threshold=${threshold}, 固定コーパス）===`);
+  console.log(
+    "  investigate を実物 report で1回凍結→ judge を K 回（analyzeStructure のみ再実行）。\n" +
+      "  detRate: (a)床下=0/K|K/K張り付き / (b)境界ジッタ=中間。\n" +
+      "  但し書き: investigation は各サンプル1ドローで固定＝ここで測るのは lever-score 分散のみ。\n" +
+      "  凍結ドローが高/低に出ると検出率の絶対値が嵩上げ/嵩下げされる（(a)/(b) の相対判定は\n" +
+      "  lever-score 分散が決めるので生きる）。investigation 分散込みの完全分布は別物（非凍結多重 run）。",
+  );
   for (const { id, sample } of labeled) {
-    let frozen: InvestigationReport | null = null;
-    const cachedInvestigate = async (): Promise<InvestigationReport> => {
-      if (frozen) return frozen;
-      // 初回だけ live investigate を通し、その report を凍結。
-      const seed = await judgeSampleDetailed(sample); // live（frozen 確定のため）
-      // judgeSampleDetailed は report を返さないので、ここでは perceivedLevers のみ
-      // 安定確認に使う。完全な report 凍結が要るなら investigate を直接呼ぶ拡張に差し替える。
-      void seed;
-      frozen = { truncated: false, truncatedReason: null } as InvestigationReport;
-      return frozen;
-    };
+    // 凍結シード: live analyze → live investigate を1回だけ実行し、その実物 report を固定。
+    // 以降の K 回はこの report を再利用＝investigation は run 間で不変（分散源から除外）。
+    const seedAnalysis = await analyzeStructure(sample.messageBody);
+    const frozenReport: InvestigationReport = seedAnalysis.degraded
+      ? ({ truncated: false, truncatedReason: null } as InvestigationReport)
+      : await investigate({
+          message: sample.messageBody,
+          levers: seedAnalysis.levers,
+        });
+    const frozenInvestigate: InvestigateFn = async () => frozenReport;
+
     const scores: number[] = [];
+    let knownScamMax = 0;
     for (let i = 0; i < k; i++) {
-      const d = await judgeSampleDetailed(sample, { investigate: cachedInvestigate });
+      const d = await judgeSampleDetailed(sample, {
+        investigate: frozenInvestigate,
+      });
       scores.push(d.score);
+      knownScamMax = Math.max(knownScamMax, d.knownScamBonusRaw);
     }
+    const detected = scores.filter((s) => s >= threshold).length;
     const min = Math.min(...scores);
     const max = Math.max(...scores);
-    console.log(`  ${id}: scores=[${scores.join(",")}] spread=${max - min}`);
+    const cls =
+      detected === 0
+        ? "床下(a)"
+        : detected === k
+          ? "常時検出"
+          : "境界ジッタ(b)";
+    console.log(
+      `  ${id}: detRate=${detected}/${k} [${cls}] scores=[${scores.join(",")}] ` +
+        `spread=${max - min} knownScamBonus(max)=${knownScamMax}`,
+    );
   }
 }
 
@@ -169,7 +203,11 @@ async function main(): Promise<number> {
   );
 
   if (process.argv.includes("--freeze-investigation")) {
-    await freezeInvestigationKRun(scamLabeled, Number(process.env.KRUN ?? "5"));
+    await freezeInvestigationKRun(
+      scamLabeled,
+      Number(process.env.KRUN ?? "5"),
+      threshold,
+    );
     return 0;
   }
 
