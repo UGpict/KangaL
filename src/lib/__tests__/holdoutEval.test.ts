@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  ciCrosses,
+  ciOverlap,
   classifyAttribution,
   compareHoldout,
+  floorSweepBands,
   isPerceivedAttack,
+  majorityFlagged,
+  sampleDetectionRate,
   SMALL_SAMPLE_N,
   summarizeHoldout,
+  wilsonInterval,
   type SampleSignals,
+  type ScoreRow,
 } from "../holdoutEval";
 import type { AttackPattern } from "@/types/attackPattern";
 
@@ -199,6 +206,105 @@ describe("summarizeHoldout: FPR は帯別（pool 禁止）", () => {
       fprIsLowerBound: true,
     });
     expect(sum.fprByDifficulty.effective).toBeUndefined();
+  });
+});
+
+describe("wilsonInterval（95% score interval・凍結）", () => {
+  it("n=0 は全 0（破綻させない）", () => {
+    expect(wilsonInterval(0, 0)).toEqual({ p: 0, lo: 0, hi: 0 });
+  });
+
+  it("点推定 p=x/n、区間は [0,1] にクランプ", () => {
+    const ci = wilsonInterval(0, 6); // 0/6
+    expect(ci.p).toBe(0);
+    expect(ci.lo).toBe(0); // クランプで負にならない
+    expect(ci.hi).toBeGreaterThan(0);
+    expect(ci.hi).toBeCloseTo(0.39, 1); // 0/6 の Wilson 上限 ≈ 0.39
+  });
+
+  it("3/6=0.5 の区間は 0.5 を中心にまたぐ（小標本＝広い）", () => {
+    const ci = wilsonInterval(3, 6);
+    expect(ci.p).toBe(0.5);
+    expect(ci.lo).toBeLessThan(0.5);
+    expect(ci.hi).toBeGreaterThan(0.5);
+  });
+
+  it("n を増やすと同じ p でも区間が狭まる", () => {
+    const small = wilsonInterval(5, 10);
+    const big = wilsonInterval(50, 100);
+    expect(big.hi - big.lo).toBeLessThan(small.hi - small.lo);
+  });
+});
+
+describe("ciCrosses / ciOverlap（区間述語）", () => {
+  it("ciCrosses: 既定 0.5 をまたぐか", () => {
+    expect(ciCrosses({ p: 0.5, lo: 0.2, hi: 0.8 })).toBe(true);
+    expect(ciCrosses({ p: 0.9, lo: 0.6, hi: 1 })).toBe(false); // 0.5 より上で外す
+    expect(ciCrosses({ p: 0.1, lo: 0, hi: 0.4 })).toBe(false); // 0.5 より下で外す
+  });
+
+  it("ciCrosses: 値指定（床境界など）", () => {
+    expect(ciCrosses({ p: 0.7, lo: 0.5, hi: 0.9 }, 0.6)).toBe(true);
+  });
+
+  it("ciOverlap: 重なる/分離を判定", () => {
+    expect(ciOverlap({ p: 0.5, lo: 0.2, hi: 0.8 }, { p: 0.6, lo: 0.4, hi: 0.9 })).toBe(true);
+    expect(ciOverlap({ p: 0.1, lo: 0, hi: 0.3 }, { p: 0.9, lo: 0.7, hi: 1 })).toBe(false);
+  });
+});
+
+describe("majorityFlagged（多数決検出・正本）", () => {
+  it("hit/K ≥ 0.5 で true（ちょうど 0.5 は検出側）", () => {
+    expect(majorityFlagged([70, 70, 50, 50], 60)).toBe(true); // 2/4=0.5
+    expect(majorityFlagged([70, 50, 50, 50], 60)).toBe(false); // 1/4
+  });
+  it("空配列は false", () => {
+    expect(majorityFlagged([], 60)).toBe(false);
+  });
+});
+
+describe("sampleDetectionRate（per-sample 検出率＋床際コインフリップ）", () => {
+  it("0/K 張り付き＝床下、CI は 0.5 をまたがない（knifeEdge=false）", () => {
+    const d = sampleDetectionRate("apple", [41, 45, 55, 41, 45, 61, 35, 45, 55, 45], 70);
+    expect(d.hit).toBe(0);
+    expect(d.n).toBe(10);
+    expect(d.knifeEdge).toBe(false);
+  });
+
+  it("中間（~0.5）＝床際コインフリップ（knifeEdge=true）", () => {
+    // etax-scam@床60: scores 全件 ≥60 か僅差 → floor を上げて中間を作る。
+    const d = sampleDetectionRate("x", [65, 61, 61, 61, 65, 65, 65, 65, 49, 61], 62);
+    // ≥62: 65×5 = 5/10 → 0.5、CI は広く 0.5 をまたぐ。
+    expect(d.hit).toBe(5);
+    expect(d.knifeEdge).toBe(true);
+  });
+});
+
+describe("floorSweepBands（床×{recall,FPR帯別} をバンドで）", () => {
+  const rows: ScoreRow[] = [
+    { id: "sc1", kind: "scam", scores: [80, 80, 80, 80, 80] }, // 全床で検出
+    { id: "sc2", kind: "scam", scores: [50, 50, 50, 50, 50] }, // 床60で未検出, 床55も未
+    { id: "be1", kind: "benign", benignDifficulty: "easy", scores: [10, 10, 10, 10, 10] },
+  ];
+
+  it("scam/easy/effective を分けて X/n＋CI を出す", () => {
+    const bands = floorSweepBands(rows, [60, 55]);
+    const f60 = bands.find((b) => b.floor === 60)!;
+    expect(f60.recall.x).toBe(1); // sc1 のみ
+    expect(f60.recall.n).toBe(2);
+    expect(f60.recall.ci.p).toBe(0.5);
+    expect(f60.fprEasy).toEqual(expect.objectContaining({ x: 0, n: 1 }));
+    expect(f60.fprEffective).toBeNull(); // effective 0件＝測定不能
+  });
+
+  it("effective 帯があれば別 CI で出す（pool しない）", () => {
+    const withEff: ScoreRow[] = [
+      ...rows,
+      { id: "ef1", kind: "benign", benignDifficulty: "effective", scores: [80, 80, 80, 80, 80] },
+    ];
+    const bands = floorSweepBands(withEff, [60]);
+    expect(bands[0].fprEffective).toEqual(expect.objectContaining({ x: 1, n: 1 }));
+    expect(bands[0].fprEasy).toEqual(expect.objectContaining({ x: 0, n: 1 }));
   });
 });
 

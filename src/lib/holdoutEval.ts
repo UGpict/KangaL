@@ -192,6 +192,128 @@ export function summarizeHoldout(
   };
 }
 
+// ── 道A 着地: 膝を「点」でなく X/n＋区間で語るための純関数群 ──
+//
+// 位置づけ（fishing でないことの明示）: ここは床値・閾値・検出規約（majority/床 grid）を
+// 一切変えない。事前登録した X/n の生カウントに Wilson 95% 区間を当てて *正直に幅を出す*
+// だけ。結果を見てから metric を差し替える事後変更ではなく、既存 metric の区間表示。
+// n=6 のような小標本で「点」を断定しない（§5-B.3「率に丸めない」の区間版）。
+
+export type WilsonInterval = {
+  p: number; // 点推定 x/n
+  lo: number; // 95% 下限（[0,1] にクランプ）
+  hi: number; // 95% 上限（[0,1] にクランプ）
+};
+
+// Wilson score interval（z=1.96, 95%）。小標本でも 0/1 境界で破綻しない
+// （scripts/probeRateConvergence.ts と同一実装＝計器として凍結）。
+export function wilsonInterval(x: number, n: number): WilsonInterval {
+  if (n === 0) return { p: 0, lo: 0, hi: 0 };
+  const z = 1.96;
+  const p = x / n;
+  const z2 = z * z;
+  const denom = 1 + z2 / n;
+  const center = (p + z2 / (2 * n)) / denom;
+  const half = (z / denom) * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n));
+  return {
+    p,
+    lo: Math.max(0, center - half),
+    hi: Math.min(1, center + half),
+  };
+}
+
+// 区間が値（既定 0.5）をまたぐか。per-sample 検出率の CI が 0.5 をまたぐ＝多数決が
+// 確率的に裏返る「床際コインフリップ」の判定に使う。
+export function ciCrosses(ci: WilsonInterval, value = 0.5): boolean {
+  return ci.lo <= value && ci.hi >= value;
+}
+
+// 2 区間が重なるか。床 60 と床 62 の recall CI が「重なる/分離」を割るのに使う
+// （分離して初めて床差に統計的意味がある）。
+export function ciOverlap(a: WilsonInterval, b: WilsonInterval): boolean {
+  return a.lo <= b.hi && b.lo <= a.hi;
+}
+
+// K-run の保存スコア行列の1行（id＋kind＋帯＋K ドローの score 列）。
+// これは LLM を通さない再 threshold 専用の生データ（凍結 fixture）。
+export type ScoreRow = {
+  id: string;
+  kind: "scam" | "benign";
+  benignDifficulty?: BenignDifficulty;
+  scores: number[];
+};
+
+// 多数決検出: detectedCount/K ≥ 0.5 で「その床で検出/誤検出」とみなす（事前登録規約）。
+// evalRealHoldout の runner と計器で同一定義を共有するため、ここを正本にする。
+export function majorityFlagged(scores: number[], floor: number): boolean {
+  if (scores.length === 0) return false;
+  const hit = scores.filter((s) => s >= floor).length;
+  return hit / scores.length >= 0.5;
+}
+
+// per-sample 検出率（K ドロー中 floor 以上の割合）＋ Wilson CI＋床際コインフリップ旗。
+export type SampleDetection = {
+  id: string;
+  hit: number;
+  n: number;
+  ci: WilsonInterval;
+  knifeEdge: boolean; // CI が 0.5 をまたぐ＝多数決が裏返りうる
+};
+
+export function sampleDetectionRate(
+  id: string,
+  scores: number[],
+  floor: number,
+): SampleDetection {
+  const hit = scores.filter((s) => s >= floor).length;
+  const n = scores.length;
+  const ci = wilsonInterval(hit, n);
+  return { id, hit, n, ci, knifeEdge: ciCrosses(ci, 0.5) };
+}
+
+// 集合の「多数決検出された件数 X / 総数 n」＋ Wilson CI（recall・FPR の帯バンド）。
+export type BandCell = {
+  x: number; // 多数決で検出（誤検出）された *サンプル* 数
+  n: number; // 帯の総サンプル数
+  ci: WilsonInterval;
+};
+
+function bandCell(rows: ScoreRow[], floor: number): BandCell {
+  const x = rows.filter((r) => majorityFlagged(r.scores, floor)).length;
+  const n = rows.length;
+  return { x, n, ci: wilsonInterval(x, n) };
+}
+
+// 1 床あたりの recall バンド＋帯別 FPR バンド（pool 禁止＝帯ごとに別 CI）。
+// 帯に1件もなければ null（「測定不能」＝主張しない）。
+export type FloorBand = {
+  floor: number;
+  recall: BandCell;
+  fprEasy: BandCell | null;
+  fprEffective: BandCell | null;
+};
+
+// 保存スコア行列を床 grid へ事後 re-threshold し、床×{recall, FPR 帯別} をバンドで出す。
+// LLM コール追加ゼロ。床は選ばない（曲線を返すだけ）。
+export function floorSweepBands(
+  rows: ScoreRow[],
+  floors: readonly number[],
+): FloorBand[] {
+  const scam = rows.filter((r) => r.kind === "scam");
+  const easy = rows.filter(
+    (r) => r.kind === "benign" && (r.benignDifficulty ?? "easy") === "easy",
+  );
+  const eff = rows.filter(
+    (r) => r.kind === "benign" && r.benignDifficulty === "effective",
+  );
+  return floors.map((floor) => ({
+    floor,
+    recall: bandCell(scam, floor),
+    fprEasy: easy.length > 0 ? bandCell(easy, floor) : null,
+    fprEffective: eff.length > 0 ? bandCell(eff, floor) : null,
+  }));
+}
+
 // BEFORE(cold) → AFTER(warm) の差分。伸びの解釈は drivers と併読する。
 export type HoldoutDelta = {
   before: HoldoutSummary;

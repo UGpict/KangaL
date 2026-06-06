@@ -37,9 +37,14 @@ import { listRealScamHoldout } from "@/lib/realScamHoldout";
 import { listRealBenignHoldout } from "@/lib/realBenignHoldout";
 import {
   compareHoldout,
+  floorSweepBands,
+  majorityFlagged,
+  sampleDetectionRate,
   summarizeHoldout,
+  type BandCell,
   type HoldoutSummary,
   type SampleSignals,
+  type WilsonInterval,
 } from "@/lib/holdoutEval";
 import { getDetectionThreshold } from "@/lib/metrics";
 import type { InvestigationReport } from "@/types/investigation";
@@ -128,10 +133,16 @@ type KRunRow = {
   knownScamMax: number;
 };
 
-// 多数決検出: detectedCount/K ≥ 0.5 で「その床で検出/誤検出」とみなす（事前登録規約）。
-function majorityFlagged(scores: number[], floor: number): boolean {
-  const hit = scores.filter((s) => s >= floor).length;
-  return hit / scores.length >= 0.5;
+// 多数決検出（majorityFlagged）は凍結計器 holdoutEval から共有（定義の二重化を避ける）。
+
+function pct(x: number): string {
+  return `${(x * 100).toFixed(0)}%`;
+}
+function ciStr(ci: WilsonInterval): string {
+  return `${pct(ci.p)}[${pct(ci.lo)}-${pct(ci.hi)}]`;
+}
+function cell(c: BandCell | null): string {
+  return c === null ? "n/a" : `${c.x}/${c.n} ${ciStr(c.ci)}`;
 }
 
 async function freezeInvestigationKRun(
@@ -189,17 +200,21 @@ async function freezeInvestigationKRun(
 
     const detected = scores.filter((s) => s >= threshold).length;
     const spread = Math.max(...scores) - Math.min(...scores);
+    // per-sample 検出率に Wilson CI を当て、CI が 0.5 をまたぐ＝床際コインフリップを明示。
+    const det = sampleDetectionRate(id, scores, threshold);
+    const edge = det.knifeEdge ? " ★床際コインフリップ(CI が0.5をまたぐ)" : "";
     if (sample.kind === "scam") {
       const cls =
         detected === 0 ? "床下(a)" : detected === k ? "常時検出" : "境界ジッタ(b)";
       console.log(
-        `  [scam] ${id}: detRate=${detected}/${k} [${cls}] scores=[${scores.join(",")}] ` +
-          `spread=${spread} knownScamBonus(max)=${knownScamMax}`,
+        `  [scam] ${id}: detRate=${detected}/${k} ${ciStr(det.ci)} [${cls}]${edge} ` +
+          `scores=[${scores.join(",")}] spread=${spread} knownScamBonus(max)=${knownScamMax}`,
       );
     } else {
       const band = benignDifficulty ?? "easy";
       console.log(
-        `  [benign/${band}] ${id}: flagRate=${detected}/${k} scores=[${scores.join(",")}] spread=${spread}`,
+        `  [benign/${band}] ${id}: flagRate=${detected}/${k} ${ciStr(det.ci)}${edge} ` +
+          `scores=[${scores.join(",")}] spread=${spread}`,
       );
     }
   }
@@ -220,21 +235,38 @@ async function freezeInvestigationKRun(
       "  ※ effective 帯 0 件＝商用ストレッサー未投入。FPR[effective] は測定不能（床決定は保留）。",
     );
   }
-  console.log(`  床 | recall | FPR[easy] | FPR[effective]`);
-  for (const floor of FLOOR_GRID) {
-    const recall = scamRows.filter((r) => majorityFlagged(r.scores, floor)).length;
-    const fpEasy = easyRows.filter((r) => majorityFlagged(r.scores, floor)).length;
-    const fpEff = effRows.filter((r) => majorityFlagged(r.scores, floor)).length;
-    const easyCell = `${fpEasy}/${easyRows.length}`;
-    const effCell = effRows.length === 0 ? "n/a" : `${fpEff}/${effRows.length}`;
-    const mark = floor === threshold ? " ←現行床" : "";
+  // 床 sweep を「点」でなくバンド（X/n＋Wilson95%CI）で出す。小標本（n=6 等）で recall を
+  // 断定しないため。床値・閾値・多数決規約は不変＝これは事後 metric 変更でなく区間表示。
+  console.log(`  床 | recall (X/n[CI]) | FPR[easy] (X/n[CI]) | FPR[effective]`);
+  const bands = floorSweepBands(rows, FLOOR_GRID);
+  for (const band of bands) {
+    const mark = band.floor === threshold ? " ←現行床" : "";
     console.log(
-      `  ${floor} | ${recall}/${scamRows.length} | ${easyCell} | ${effCell}${mark}`,
+      `  ${band.floor} | ${cell(band.recall)} | ${cell(band.fprEasy)} | ${cell(band.fprEffective)}${mark}`,
     );
   }
+  // 隣接床の recall CI が重なるか分離するか（分離して初めて床差に統計的意味がある）。
+  const overlapNote = (() => {
+    const find = (f: number) => bands.find((b) => b.floor === f);
+    const pairs: Array<[number, number]> = [
+      [62, 60],
+      [60, 58],
+    ];
+    const out: string[] = [];
+    for (const [a, b] of pairs) {
+      const ba = find(a);
+      const bb = find(b);
+      if (!ba || !bb) continue;
+      const ov = ba.recall.ci.lo <= bb.recall.ci.hi && bb.recall.ci.lo <= ba.recall.ci.hi;
+      out.push(`床${a}↔${b}: recall CI は${ov ? "重なる（差は有意でない）" : "分離"}`);
+    }
+    return out.join(" / ");
+  })();
+  if (overlapNote) console.log(`  CI 重なり: ${overlapNote}`);
   console.log(
-    "  読み: 床を下げると recall↑だが effective FPR↑。トレードオフ曲線を見て *人間が* 床を決める\n" +
-      "  （コードは床を選ばない）。effective が空の間は recall↑と easy FPR の安全性下界までしか言えない。",
+    "  読み: 小標本では recall は点でなくバンド。隣接床の CI が重なる間は床差に意味がない。\n" +
+      "  床を下げると recall↑だが effective FPR↑。曲線を見て *人間が* 床を決める（コードは選ばない）。\n" +
+      "  effective が空の間は recall↑と easy FPR の安全性下界までしか言えない。",
   );
 }
 

@@ -56,6 +56,11 @@
 - **ただし非executive の発現は確率的**: vendor は 3-run 中 **1回のみ**汎化。「未検知ラウンドで能動 isolation(secrecy) を persist できるか」の**タイミング・レース**に依存（§10.3）。executive は seed が gen1 から secrecy を持つので 3/3 堅牢（authority 意味論ではなく seed タイミングの産物）。対照群 `exec-vishing-call`（isolation=direct_channel≠secrecy）が **3/3 非flip** で「駆動因＝能動 isolation=secrecy の一致、authority ではない」を締める。
 - **現在言える正確な claim（§10.4）**: 「能動構造（authority+personalization+isolation=secrecy）の cta-crossing 汎化は系統非依存。能動 isolation レバーが corpus に persist した系統で発現し、seed 由来（executive）なら決定論的に堅牢、evolve 後天獲得（vendor/platform）なら確率的」。
 - **6/14 引き際チェックポイント = 閉ループで GO**（§7-102）。暗記・汎化とも成立、シードベース半自律フォールバックには倒さず最小閉ループを正式採用と確定。
+- **柱2 道A: 膝は「点」でなくバンド（(ii) 確定・旧『膝=60確定』を上書き）**（記録: `implementation-notes-holdout-n6.md` §7）。
+  - lever-score 分散は**既約に ~0.5**（incentive(i2) が K=20/30 で完全 50/50＝CI が 0.5 をまたぐ／personalization は n 増で 0.5 へ寄る／対照 isolation(none) は解決）。temp=0 でも残留。**多数決は決定論化の道具にならない**＝膝 recall 4/6 は揺れる多数決。決定論化（道B・isolation 厳格化）は**採らない**（最も侵襲的＋潰しても別境界へ逃げる）。
+  - 凍結 K-run 行列に Wilson95%CI を当てると（床/閾値/規約は不変＝事後 metric 変更でない・正直な区間表示）、**床 70→55 の recall は 1/6→4/6 だが隣接床の CI が全ペアで重なる**＝n=6 で床差に統計的意味なし。膝60 = 4/6 [30–90%]。膝の中身4のうち2件はコインフリップ（CI が 0.5 をまたぐ）。
+  - 凍結 investigation seed が run 間で列全体を上下させ、**どのサンプルがコインフリップかも run 間で不安定**（§6 と §7.2 で同定が変わる）＝膝は単一 K-run が見せるよりさらに点でない。
+  - deep(a)=apple は床60 でも ~0＝床問題でなく URL レピュテーション側の別課題。FPR[effective]（商用ストレッサー）未投入＝床下げの真の FP 危険は未測定。**床はコードで選ばない**＝バンドを提示し床決定は人間に返す。
 
 ---
 
@@ -69,13 +74,17 @@
 
 ## 5. 次の一歩（未決・要判断）
 
-### 5-A. 直前に着手済み（未コミットの作業ツリー変更）— 柱2 の最初の準備タスク
+### 5-A. 柱2 のコミット済み層と、道A 着地コミットの構成
 
-ユーザー合意のうえ、柱2（外部実物ホールドアウト）の**最初の実装タスク**に着手済み。**まだコミットしていない**（作業ツリーのみ）。内容:
-- **investigation 層の注入 seam**（`src/agents/loop.ts`）: `judgeSampleViaPipeline(sample, deps?)` に optional `deps:{investigate?}` を追加（既定＝実 `investigate`）。`analyzeStructure`/`judge` は据え置き。⇒ live（deps 省略）= 実運用レポート用、cached（凍結 report を渡す）= BEFORE/AFTER 差分主張＋8/19 本番デモ用。cached 時の非決定は `analyzeStructure`（防御の知覚）だけに絞れる。**検知器（`matchKnownScams`）は不変**。
-- **不変条件 A の境界テスト**（`src/agents/__tests__/attacker.boundary.test.ts`、新規）: `attacker.ts` からの**transitive import グラフ**を静的に辿り、到達モジュール・指定子に `firestore` / `holdout` / `realScamHoldout` が**現れない**ことを assert（＋ウォーカ健全性チェック）。V3 の「attacker は firestore 非依存」「実物は評価専用隔離」を規約でなく**到達不能性**として固定。
-- seam テスト1件を `judgeSample.test.ts` に追加（注入版が呼ばれ既定 `investigate` は触られない）。
-- 状態: 上記3点で `npx vitest run` 緑（204 passed）。**コミット可否はユーザー判断待ち**（seam+boundary を先に1コミットにするか、次チャンクへ束ねるか）。
+§5-A の旧「未コミット seam」はすでに**コミット済み**（HEAD=`566e165`）。柱2 計器・ハーネス・隔離・帯別 FPR・床 sweep 配線まで履歴に入った（`e61e54e`〜`566e165`）。
+
+**道A 着地コミット（この一手・1コミット）**: 凍結 K-run 行列を「点」でなくバンドで報告する計器拡張。
+- `src/lib/holdoutEval.ts`: `wilsonInterval` / `ciCrosses` / `ciOverlap` / `majorityFlagged`（正本化）/ `sampleDetectionRate` / `floorSweepBands`（純関数・LLM 不到達）。
+- `src/lib/__tests__/holdoutEval.test.ts`: 上記の TDD（計 30 passed）。
+- `scripts/evalRealHoldout.ts`: 床 sweep 出力をバンド化（X/n＋Wilson CI）＋ per-sample CI＋床際コインフリップ表示＋隣接床 CI 重なり判定。`majorityFlagged` は計器から共有（二重定義削除）。
+- notes: 本 §3 の膝ステータス＋ `implementation-notes-holdout-n6.md` §7。
+
+**この着地コミットに含めない（観測専用・未コミットのまま）**: `scripts/probeLeverVariance.ts` / `probeMajorityVote.ts` / `probeRateConvergence.ts` / `reportRoadALanding.ts` の4 probe＋`src/agents/analyzeStructure.ts` の追加専用 temperature フック。多数決/temp=0 を**本体に入れるかは別判断**＝観測と本体変更を混ぜない。
 
 ### 5-B. 推奨方針（前コンテキストでの結論・ユーザー未最終決）= 柱2 へ進む
 
