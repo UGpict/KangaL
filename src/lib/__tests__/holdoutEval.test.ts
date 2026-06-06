@@ -97,7 +97,7 @@ describe("summarizeHoldout: recall 生カウント＋4分類", () => {
       signal({ id: "d", score: 15 }), // perception
       signal({ id: "e", degraded: true, perceivedLevers: null }), // degraded
     ];
-    const sum = summarizeHoldout(signals, { threshold: THRESHOLD, benignDifficulty: "mixed" });
+    const sum = summarizeHoldout(signals, { threshold: THRESHOLD });
     expect(sum.scamTotal).toBe(5);
     expect(sum.detected).toBe(2);
     expect(sum.byClass).toEqual({
@@ -109,11 +109,11 @@ describe("summarizeHoldout: recall 生カウント＋4分類", () => {
   });
 
   it("smallSample は scam 数が SMALL_SAMPLE_N 未満で true", () => {
-    const few = summarizeHoldout([signal({ score: 80 })], { threshold: THRESHOLD, benignDifficulty: "mixed" });
+    const few = summarizeHoldout([signal({ score: 80 })], { threshold: THRESHOLD });
     expect(few.smallSample).toBe(true);
     const many = summarizeHoldout(
       Array.from({ length: SMALL_SAMPLE_N }, (_, i) => signal({ id: `s${i}`, score: 80 })),
-      { threshold: THRESHOLD, benignDifficulty: "mixed" },
+      { threshold: THRESHOLD },
     );
     expect(many.smallSample).toBe(false);
   });
@@ -121,7 +121,7 @@ describe("summarizeHoldout: recall 生カウント＋4分類", () => {
 
 describe("summarizeHoldout: detection drivers（counterfactual 切り分け）", () => {
   it("leverAlone: レバー素点だけで閾値到達", () => {
-    const sum = summarizeHoldout([signal({ score: 75, leverScore: 75 })], { threshold: THRESHOLD, benignDifficulty: "mixed" });
+    const sum = summarizeHoldout([signal({ score: 75, leverScore: 75 })], { threshold: THRESHOLD });
     expect(sum.drivers.leverAlone).toBe(1);
     expect(sum.drivers.dependsOnKnownScam).toBe(0);
     expect(sum.drivers.dependsOnInvestigation).toBe(0);
@@ -131,7 +131,7 @@ describe("summarizeHoldout: detection drivers（counterfactual 切り分け）",
     // leverScore 60 + known 15 = 75 detected。known を外すと 60 < 70。
     const sum = summarizeHoldout(
       [signal({ score: 75, leverScore: 60, knownScamBonusRaw: 15 })],
-      { threshold: THRESHOLD, benignDifficulty: "mixed" },
+      { threshold: THRESHOLD },
     );
     expect(sum.drivers.dependsOnKnownScam).toBe(1);
     expect(sum.drivers.dependsOnInvestigation).toBe(0);
@@ -141,7 +141,7 @@ describe("summarizeHoldout: detection drivers（counterfactual 切り分け）",
   it("dependsOnInvestigation: 外部調査 bonus を外すと床下＝調査依存", () => {
     const sum = summarizeHoldout(
       [signal({ score: 75, leverScore: 60, otherInvestigationBonusRaw: 15 })],
-      { threshold: THRESHOLD, benignDifficulty: "mixed" },
+      { threshold: THRESHOLD },
     );
     expect(sum.drivers.dependsOnInvestigation).toBe(1);
     expect(sum.drivers.dependsOnKnownScam).toBe(0);
@@ -152,34 +152,60 @@ describe("summarizeHoldout: detection drivers（counterfactual 切り分け）",
     // known を外すと 50+15=65<70、investigation を外すと 50+15=65<70。
     const sum = summarizeHoldout(
       [signal({ score: 75, leverScore: 50, knownScamBonusRaw: 15, otherInvestigationBonusRaw: 15 })],
-      { threshold: THRESHOLD, benignDifficulty: "mixed" },
+      { threshold: THRESHOLD },
     );
     expect(sum.drivers.dependsOnKnownScam).toBe(1);
     expect(sum.drivers.dependsOnInvestigation).toBe(1);
   });
 });
 
-describe("summarizeHoldout: FPR 生カウント＋下界フラグ", () => {
-  it("benign の誤検出を生カウントし、easy-only は下界フラグ立て", () => {
+describe("summarizeHoldout: FPR は帯別（pool 禁止）", () => {
+  it("benign を benignDifficulty で割り、帯ごとに falseFlagged/benignTotal を生カウント", () => {
+    // easy 3件中1件 FP / effective 2件中1件 FP。pool すれば 2/5 だが、それは出さない。
     const signals: SampleSignals[] = [
-      signal({ id: "b1", kind: "benign", score: 10 }),
-      signal({ id: "b2", kind: "benign", score: 72 }), // 誤検出
-      signal({ id: "b3", kind: "benign", score: 30 }),
+      signal({ id: "e1", kind: "benign", benignDifficulty: "easy", score: 10 }),
+      signal({ id: "e2", kind: "benign", benignDifficulty: "easy", score: 72 }), // FP
+      signal({ id: "e3", kind: "benign", benignDifficulty: "easy", score: 30 }),
+      signal({ id: "f1", kind: "benign", benignDifficulty: "effective", score: 80 }), // FP
+      signal({ id: "f2", kind: "benign", benignDifficulty: "effective", score: 40 }),
     ];
-    const easy = summarizeHoldout(signals, { threshold: THRESHOLD, benignDifficulty: "easy" });
-    expect(easy.benignTotal).toBe(3);
-    expect(easy.falseFlagged).toBe(1);
-    expect(easy.fprIsLowerBound).toBe(true);
+    const sum = summarizeHoldout(signals, { threshold: THRESHOLD });
 
-    const mixed = summarizeHoldout(signals, { threshold: THRESHOLD, benignDifficulty: "mixed" });
-    expect(mixed.fprIsLowerBound).toBe(false);
+    expect(sum.benignTotal).toBe(5);
+    // pooled な falseFlagged フィールドは存在しない（主報告で pool しない）。
+    expect(sum).not.toHaveProperty("falseFlagged");
+    expect(sum).not.toHaveProperty("fprIsLowerBound");
+
+    expect(sum.fprByDifficulty.easy).toEqual({
+      benignTotal: 3,
+      falseFlagged: 1,
+      fprIsLowerBound: true, // easy＝楽観・下界
+    });
+    expect(sum.fprByDifficulty.effective).toEqual({
+      benignTotal: 2,
+      falseFlagged: 1,
+      fprIsLowerBound: false, // effective＝保守側
+    });
+  });
+
+  it("benignDifficulty 未指定の benign は easy 帯に寄せる（最も楽観側）", () => {
+    const sum = summarizeHoldout(
+      [signal({ id: "b", kind: "benign", score: 72 })],
+      { threshold: THRESHOLD },
+    );
+    expect(sum.fprByDifficulty.easy).toEqual({
+      benignTotal: 1,
+      falseFlagged: 1,
+      fprIsLowerBound: true,
+    });
+    expect(sum.fprByDifficulty.effective).toBeUndefined();
   });
 });
 
 describe("compareHoldout: BEFORE→AFTER 差分", () => {
   it("detected の生カウント差を返す", () => {
-    const before = summarizeHoldout([signal({ score: 20 }), signal({ score: 30 })], { threshold: THRESHOLD, benignDifficulty: "mixed" });
-    const after = summarizeHoldout([signal({ score: 80 }), signal({ score: 30 })], { threshold: THRESHOLD, benignDifficulty: "mixed" });
+    const before = summarizeHoldout([signal({ score: 20 }), signal({ score: 30 })], { threshold: THRESHOLD });
+    const after = summarizeHoldout([signal({ score: 80 }), signal({ score: 30 })], { threshold: THRESHOLD });
     const delta = compareHoldout(before, after);
     expect(before.detected).toBe(0);
     expect(after.detected).toBe(1);

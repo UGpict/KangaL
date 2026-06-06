@@ -12,10 +12,14 @@
 //    コーパスを育てた後に同じ集合を再評価。伸びは drivers（known-scam 由来か調査由来か）
 //    と併読する。investigate は LIVE（matchKnownScams が現コーパスを反映する＝warm の
 //    treatment はコーパス成長そのもの）。
-//  - benign は既存の easy ベースライン（listBenignSamples）なので FPR は下界（fprIsLowerBound）。
+//  - benign は実物 holdout（realBenignHoldout）から帯ラベル付き（easy/effective）で読む。
+//    FPR は *帯別* に出す（pool 禁止）: easy=楽観・下界 / effective=保守側ストレッサー。
+//    benign が空でも続行（scam recall は出せる／FPR は「主張しない」）。
 //  - K-run（--freeze-investigation）は *固定コーパス* 上で investigate を1回だけ実行して
 //    凍結し、analyzeStructure の知覚揺れだけを K 回観測する within-condition モード
-//    （BEFORE/AFTER 比較とは別物。コーパスを育てない）。
+//    （BEFORE/AFTER 比較とは別物。コーパスを育てない）。scam＋benign を同一 pass で回し、
+//    保存スコア行列を事前登録 床 grid {70,65,62,60,58,55} へ事後 re-threshold して
+//    床×difficulty×{recall,FPR} を出す（LLM コール追加ゼロ）。床は人間が決める。
 //
 // 数字は脚色しない: 実物 recall が低くても現在地として出す（§5-B「正直な期待値」）。
 
@@ -29,25 +33,30 @@ import {
 } from "@/agents/judgeSample";
 import { analyzeStructure } from "@/agents/analyzeStructure";
 import { investigate } from "@/agents/investigate";
-import { listBenignSamples } from "@/lib/firestore";
 import { listRealScamHoldout } from "@/lib/realScamHoldout";
+import { listRealBenignHoldout } from "@/lib/realBenignHoldout";
 import {
   compareHoldout,
   summarizeHoldout,
-  type BenignDifficulty,
   type HoldoutSummary,
   type SampleSignals,
 } from "@/lib/holdoutEval";
 import { getDetectionThreshold } from "@/lib/metrics";
 import type { InvestigationReport } from "@/types/investigation";
-import type { Sample } from "@/types/attackPattern";
+import type { BenignDifficulty, Sample } from "@/types/attackPattern";
 
-type LabeledSample = { id: string; sample: Sample };
+// benign は per-sample 帯ラベルを携える（FPR を帯別に割るため）。scam では undefined。
+type LabeledSample = {
+  id: string;
+  sample: Sample;
+  benignDifficulty?: BenignDifficulty;
+};
 
 function detailToSignal(
   id: string,
   kind: "scam" | "benign",
   d: SampleJudgeDetail,
+  benignDifficulty?: BenignDifficulty,
 ): SampleSignals {
   return {
     id,
@@ -58,17 +67,15 @@ function detailToSignal(
     leverScore: d.leverScore,
     knownScamBonusRaw: d.knownScamBonusRaw,
     otherInvestigationBonusRaw: d.otherInvestigationBonusRaw,
+    ...(kind === "benign" ? { benignDifficulty: benignDifficulty ?? "easy" } : {}),
   };
 }
 
-async function evaluateAll(
-  labeled: LabeledSample[],
-  kindOf: (id: string) => "scam" | "benign",
-): Promise<SampleSignals[]> {
+async function evaluateAll(labeled: LabeledSample[]): Promise<SampleSignals[]> {
   const out: SampleSignals[] = [];
-  for (const { id, sample } of labeled) {
+  for (const { id, sample, benignDifficulty } of labeled) {
     const detail = await judgeSampleDetailed(sample); // LIVE investigate
-    out.push(detailToSignal(id, kindOf(id), detail));
+    out.push(detailToSignal(id, sample.kind, detail, benignDifficulty));
   }
   return out;
 }
@@ -87,10 +94,44 @@ function printSummary(label: string, s: HoldoutSummary): void {
     `  drivers: leverAlone=${s.drivers.leverAlone} / dependsOnKnownScam=${s.drivers.dependsOnKnownScam} / ` +
       `dependsOnInvestigation=${s.drivers.dependsOnInvestigation}`,
   );
-  console.log(
-    `  FPR(生): ${s.falseFlagged}/${s.benignTotal}` +
-      (s.fprIsLowerBound ? "  ※easy-only＝真の FPR の下界" : ""),
-  );
+  // FPR は帯別に出す（pool 禁止＝easy の 0 が effective の FP を薄めないように）。
+  const bands: BenignDifficulty[] = ["easy", "effective"];
+  const present = bands.filter((b) => s.fprByDifficulty[b]);
+  if (present.length === 0) {
+    console.log(`  FPR(生): benign=0（FPR について何も主張しない）`);
+  } else {
+    for (const b of present) {
+      const cell = s.fprByDifficulty[b]!;
+      console.log(
+        `  FPR(生)[${b}]: ${cell.falseFlagged}/${cell.benignTotal}` +
+          (cell.fprIsLowerBound
+            ? "  ※easy＝楽観・真の FPR の下界"
+            : "  ※effective＝保守側ストレッサー"),
+      );
+    }
+    if (!present.includes("effective")) {
+      console.log(
+        "  ※ effective 帯 0 件＝商用ストレッサー未投入。床下げの FP 危険はまだ測れない。",
+      );
+    }
+  }
+}
+
+// 道A の事前登録 床 grid。結果を見て足さない（事後いじり禁止）。70 が現行床。
+const FLOOR_GRID = [70, 65, 62, 60, 58, 55] as const;
+
+type KRunRow = {
+  id: string;
+  kind: "scam" | "benign";
+  benignDifficulty?: BenignDifficulty;
+  scores: number[];
+  knownScamMax: number;
+};
+
+// 多数決検出: detectedCount/K ≥ 0.5 で「その床で検出/誤検出」とみなす（事前登録規約）。
+function majorityFlagged(scores: number[], floor: number): boolean {
+  const hit = scores.filter((s) => s >= floor).length;
+  return hit / scores.length >= 0.5;
 }
 
 async function freezeInvestigationKRun(
@@ -101,20 +142,23 @@ async function freezeInvestigationKRun(
   // within-condition（固定コーパス）: investigate を *実物 report* で1回だけ凍結し、
   // judge を K 回。非決定は analyzeStructure（知覚＝レバー素点）だけに絞られる。
   //
-  // 狙い（道A の的を割る）: per-sample 検出率で2つの「<threshold」を区別する。
+  // 狙い1（道A の的を割る）: per-sample 検出率で2つの「<threshold」を区別する。
   //   (a) 床下      = 0/K か K/K に張り付く＝構造的取りこぼし（床/投資ボーナスの対象）。
-  //   (b) 境界ジッタ = 中間（~0.5）＝threshold 上下を確率的に跨ぐ＝分散の問題
-  //                    （床を下げても跨ぐ位置が下にずれるだけ。決定論化/安定化で手当て）。
-  // 主軸は dependsOnKnownScam=false サブセットの検出率（knownScamBonus を併記して確認）。
+  //   (b) 境界ジッタ = 中間（~0.5）＝threshold 上下を確率的に跨ぐ＝分散の問題。
+  // 狙い2（床トレードオフ）: 保存した score 行列を床 grid へ *事後 re-threshold* する。
+  //   LLM コール追加ゼロ。床×difficulty×{recall, FPR} を出す（FPR は帯別＝pool 禁止）。
+  // 主軸は dependsOnKnownScam=false サブセットの検出率（knownScamBonus を併記）。
   console.log(`\n=== K-run（--freeze-investigation, k=${k}, threshold=${threshold}, 固定コーパス）===`);
   console.log(
     "  investigate を実物 report で1回凍結→ judge を K 回（analyzeStructure のみ再実行）。\n" +
-      "  detRate: (a)床下=0/K|K/K張り付き / (b)境界ジッタ=中間。\n" +
+      "  scam: detRate (a)床下=0/K|K/K張り付き / (b)境界ジッタ=中間。benign: 同じ多数決で FP 判定。\n" +
       "  但し書き: investigation は各サンプル1ドローで固定＝ここで測るのは lever-score 分散のみ。\n" +
       "  凍結ドローが高/低に出ると検出率の絶対値が嵩上げ/嵩下げされる（(a)/(b) の相対判定は\n" +
       "  lever-score 分散が決めるので生きる）。investigation 分散込みの完全分布は別物（非凍結多重 run）。",
   );
-  for (const { id, sample } of labeled) {
+
+  const rows: KRunRow[] = [];
+  for (const { id, sample, benignDifficulty } of labeled) {
     // 凍結シード: live analyze → live investigate を1回だけ実行し、その実物 report を固定。
     // 以降の K 回はこの report を再利用＝investigation は run 間で不変（分散源から除外）。
     const seedAnalysis = await analyzeStructure(sample.messageBody);
@@ -135,20 +179,63 @@ async function freezeInvestigationKRun(
       scores.push(d.score);
       knownScamMax = Math.max(knownScamMax, d.knownScamBonusRaw);
     }
+    rows.push({
+      id,
+      kind: sample.kind,
+      benignDifficulty,
+      scores,
+      knownScamMax,
+    });
+
     const detected = scores.filter((s) => s >= threshold).length;
-    const min = Math.min(...scores);
-    const max = Math.max(...scores);
-    const cls =
-      detected === 0
-        ? "床下(a)"
-        : detected === k
-          ? "常時検出"
-          : "境界ジッタ(b)";
+    const spread = Math.max(...scores) - Math.min(...scores);
+    if (sample.kind === "scam") {
+      const cls =
+        detected === 0 ? "床下(a)" : detected === k ? "常時検出" : "境界ジッタ(b)";
+      console.log(
+        `  [scam] ${id}: detRate=${detected}/${k} [${cls}] scores=[${scores.join(",")}] ` +
+          `spread=${spread} knownScamBonus(max)=${knownScamMax}`,
+      );
+    } else {
+      const band = benignDifficulty ?? "easy";
+      console.log(
+        `  [benign/${band}] ${id}: flagRate=${detected}/${k} scores=[${scores.join(",")}] spread=${spread}`,
+      );
+    }
+  }
+
+  // ── 床 sweep（保存スコアへの事後 re-threshold・LLM コール追加ゼロ）──
+  const scamRows = rows.filter((r) => r.kind === "scam");
+  const benignRows = rows.filter((r) => r.kind === "benign");
+  const easyRows = benignRows.filter((r) => (r.benignDifficulty ?? "easy") === "easy");
+  const effRows = benignRows.filter((r) => r.benignDifficulty === "effective");
+
+  console.log(
+    `\n=== 床 sweep（多数決 detectedCount/K≥0.5・保存スコア re-threshold）===\n` +
+      `  recall=scam検出/${scamRows.length}（主軸: 全件 dependsOnKnownScam=false 前提）。\n` +
+      `  FPR は帯別（pool 禁止）: easy=${easyRows.length}件（楽観・下界） / effective=${effRows.length}件（保守側）。`,
+  );
+  if (effRows.length === 0) {
     console.log(
-      `  ${id}: detRate=${detected}/${k} [${cls}] scores=[${scores.join(",")}] ` +
-        `spread=${max - min} knownScamBonus(max)=${knownScamMax}`,
+      "  ※ effective 帯 0 件＝商用ストレッサー未投入。FPR[effective] は測定不能（床決定は保留）。",
     );
   }
+  console.log(`  床 | recall | FPR[easy] | FPR[effective]`);
+  for (const floor of FLOOR_GRID) {
+    const recall = scamRows.filter((r) => majorityFlagged(r.scores, floor)).length;
+    const fpEasy = easyRows.filter((r) => majorityFlagged(r.scores, floor)).length;
+    const fpEff = effRows.filter((r) => majorityFlagged(r.scores, floor)).length;
+    const easyCell = `${fpEasy}/${easyRows.length}`;
+    const effCell = effRows.length === 0 ? "n/a" : `${fpEff}/${effRows.length}`;
+    const mark = floor === threshold ? " ←現行床" : "";
+    console.log(
+      `  ${floor} | ${recall}/${scamRows.length} | ${easyCell} | ${effCell}${mark}`,
+    );
+  }
+  console.log(
+    "  読み: 床を下げると recall↑だが effective FPR↑。トレードオフ曲線を見て *人間が* 床を決める\n" +
+      "  （コードは床を選ばない）。effective が空の間は recall↑と easy FPR の安全性下界までしか言えない。",
+  );
 }
 
 async function main(): Promise<number> {
@@ -168,9 +255,9 @@ async function main(): Promise<number> {
     );
     return 1;
   }
-  const benign = await listBenignSamples();
-  const benignDifficulty: BenignDifficulty =
-    (process.env.BENIGN_DIFFICULTY as BenignDifficulty) ?? "easy";
+  // benign は実物 holdout（realBenignHoldout）から帯ラベル付きで読む。空でも続行する
+  // （scam recall は出せる／FPR は「benign=0＝主張しない」になる）。
+  const benign = await listRealBenignHoldout();
   const threshold = getDetectionThreshold();
   const warmRounds = Number(process.env.WARM_ROUNDS ?? "5");
   const warmLineages = Number(process.env.WARM_LINEAGES ?? "3");
@@ -182,16 +269,22 @@ async function main(): Promise<number> {
   const benignLabeled: LabeledSample[] = benign.map((b) => ({
     id: b.id,
     sample: { kind: "benign", messageBody: b.messageBody },
+    benignDifficulty: b.benignDifficulty,
   }));
   const all = [...scamLabeled, ...benignLabeled];
-  const kindOf = (id: string): "scam" | "benign" =>
-    holdout.some((h) => h.id === id) ? "scam" : "benign";
 
+  const easyCount = benign.filter((b) => b.benignDifficulty === "easy").length;
+  const effCount = benign.filter((b) => b.benignDifficulty === "effective").length;
   console.log(
     `=== 柱2 実物ホールドアウト cold+warm 実測 ===\n` +
-      `holdout(scam)=${holdout.length} / benign=${benign.length} / threshold=${threshold} / ` +
-      `benignDifficulty=${benignDifficulty}`,
+      `holdout(scam)=${holdout.length} / benign=${benign.length}` +
+      `（easy=${easyCount} / effective=${effCount}） / threshold=${threshold}`,
   );
+  if (effCount === 0) {
+    console.log(
+      "  ※ effective 帯 0 件＝商用ストレッサー未投入。床下げの FP 危険は未測定（停止点どおり）。",
+    );
+  }
   // provenance を一覧（出所が割れているほど漏洩リスクは下がる・出所分離の監査）。
   const sources = new Map<string, number>();
   for (const h of holdout) {
@@ -203,18 +296,15 @@ async function main(): Promise<number> {
   );
 
   if (process.argv.includes("--freeze-investigation")) {
-    await freezeInvestigationKRun(
-      scamLabeled,
-      Number(process.env.KRUN ?? "5"),
-      threshold,
-    );
+    // scam＋benign を同一 K-run pass で回す（床 sweep で recall と帯別 FPR を同時に出す）。
+    await freezeInvestigationKRun(all, Number(process.env.KRUN ?? "5"), threshold);
     return 0;
   }
 
   // BEFORE(cold): 現コーパスのまま。
   console.log("\n[BEFORE/cold] 現コーパスで実物 holdout を評価（live investigate）...");
-  const beforeSignals = await evaluateAll(all, kindOf);
-  const before = summarizeHoldout(beforeSignals, { threshold, benignDifficulty });
+  const beforeSignals = await evaluateAll(all);
+  const before = summarizeHoldout(beforeSignals, { threshold });
   printSummary("BEFORE/cold", before);
 
   // WARM: self-play でコーパスを育てる（実 generateAttackPattern＝recon シード）。
@@ -230,8 +320,8 @@ async function main(): Promise<number> {
 
   // AFTER(warm): 同じ集合を再評価。
   console.log("\n[AFTER/warm] コーパス成長後に同じ集合を再評価...");
-  const afterSignals = await evaluateAll(all, kindOf);
-  const after = summarizeHoldout(afterSignals, { threshold, benignDifficulty });
+  const afterSignals = await evaluateAll(all);
+  const after = summarizeHoldout(afterSignals, { threshold });
   printSummary("AFTER/warm", after);
 
   const delta = compareHoldout(before, after);

@@ -1,4 +1,4 @@
-import type { AttackPattern } from "@/types/attackPattern";
+import type { AttackPattern, BenignDifficulty } from "@/types/attackPattern";
 import { getDetectionThreshold } from "@/lib/metrics";
 import { INVESTIGATION_BONUS_CAP } from "@/lib/weights";
 
@@ -31,6 +31,9 @@ export type SampleSignals = {
   // bonus 生点（cap 25 前）。known-scam＝self-play corpus 由来、それ以外＝外部調査。
   knownScamBonusRaw: number;
   otherInvestigationBonusRaw: number;
+  // benign のみ: 効き目帯（easy control / effective stressor）。FPR を帯別に割るための
+  // ラベル。scam では無視。未指定の benign は "easy" 扱い（最も楽観側へ寄せる）。
+  benignDifficulty?: BenignDifficulty;
 };
 
 // 4分類 attribution（HANDOFF §5-B.3）:
@@ -99,7 +102,14 @@ export type DetectionDrivers = {
   dependsOnInvestigation: number;
 };
 
-export type BenignDifficulty = "easy" | "mixed";
+// FPR は *帯別に* 出す（pool 禁止）。pool すると easy の FPR≈0 が effective の FP を
+// 薄めて単一の楽観値になり、床下げの危険が見えなくなる（道A の主報告は帯別 FPR）。
+export type FprCell = {
+  benignTotal: number;
+  falseFlagged: number;
+  // easy=true（楽観・真の FPR の下界） / effective=false（保守側＝下界扱いにしない）。
+  fprIsLowerBound: boolean;
+};
 
 export type HoldoutSummary = {
   threshold: number;
@@ -108,19 +118,24 @@ export type HoldoutSummary = {
   detected: number;
   byClass: Record<Attribution, number>; // scam 集合のみ
   drivers: DetectionDrivers;
-  // FPR も生カウント。easy-only benign では真の FPR の *下界*（hard を入れれば上がる）。
-  benignTotal: number;
-  falseFlagged: number;
-  fprIsLowerBound: boolean;
+  // FPR は帯別（easy / effective）に生カウントで持つ。主報告はこの帯別セル。
+  // pooled な単一 FPR は意図的に持たない（主報告で pool しないため）。
+  benignTotal: number; // 帯をまたいだ総数（参考・recall と桁を合わせる用途のみ）。
+  fprByDifficulty: Partial<Record<BenignDifficulty, FprCell>>;
   smallSample: boolean; // n < SMALL_SAMPLE_N → 率でなく X/n で語る合図。
 };
+
+// 帯から下界フラグを引く（構造的性質＝easy は楽観側で下界、effective は保守側）。
+function fprIsLowerBoundFor(difficulty: BenignDifficulty): boolean {
+  return difficulty === "easy";
+}
 
 // 「点で率を出さず X/n で語る」境界。n がこの未満なら小標本扱い（§5-B.3, n≈20）。
 export const SMALL_SAMPLE_N = 30;
 
 export function summarizeHoldout(
   signals: SampleSignals[],
-  opts: { threshold?: number; benignDifficulty: BenignDifficulty },
+  opts: { threshold?: number } = {},
 ): HoldoutSummary {
   const threshold = opts.threshold ?? getDetectionThreshold();
 
@@ -151,7 +166,19 @@ export function summarizeHoldout(
       drivers.dependsOnInvestigation += 1;
   }
 
-  const falseFlagged = benigns.filter((b) => b.score >= threshold).length;
+  // 帯別 FPR: benign を benignDifficulty（未指定は "easy"）でグループ化し、各帯で
+  // falseFlagged / benignTotal を生カウント。fprIsLowerBound は帯の構造的性質から引く。
+  const fprByDifficulty: Partial<Record<BenignDifficulty, FprCell>> = {};
+  for (const b of benigns) {
+    const difficulty: BenignDifficulty = b.benignDifficulty ?? "easy";
+    const cell = (fprByDifficulty[difficulty] ??= {
+      benignTotal: 0,
+      falseFlagged: 0,
+      fprIsLowerBound: fprIsLowerBoundFor(difficulty),
+    });
+    cell.benignTotal += 1;
+    if (b.score >= threshold) cell.falseFlagged += 1;
+  }
 
   return {
     threshold,
@@ -160,8 +187,7 @@ export function summarizeHoldout(
     byClass,
     drivers,
     benignTotal: benigns.length,
-    falseFlagged,
-    fprIsLowerBound: opts.benignDifficulty === "easy",
+    fprByDifficulty,
     smallSample: scams.length < SMALL_SAMPLE_N,
   };
 }
