@@ -99,3 +99,122 @@ GOOGLE_CLOUD_PROJECT=ai-bridging GOOGLE_CLOUD_LOCATION=us-central1 \
 - 検証データは削除しコーパスを空に戻した（以降の T3/T5 実測を汚さないため）。
 - **留意（T2-③ へ）**: これは in-loop の「書き戻した型と同一/酷似の捕捉」＝**暗記**の成立確認まで。「検知器が育った（汎化）」の主張には、書き戻していない新規型（外部ホールドアウト）への recall 回復が要る＝ T5 で検証。② のゴール「書き戻し配線が動く・matches が埋まり始める」は達成。
 - 再現: `GOOGLE_CLOUD_PROJECT=ai-bridging GOOGLE_CLOUD_LOCATION=us-central1 DEMO_MODE=true npx tsx scripts/verify-closed-loop.ts`
+- **6/14 引き際チェックポイント（PLAN-v2 §3）の決定: 閉ループでGO。** §4 の判定（V1 確定＝静的防御では回復しない／最小閉ループを実装する）を、本節の実環境 DoD PASS（0→非空、`matchKnownScams` が翌ラウンドで捕捉）で裏付け。シードベース半自律（03-1 相当）には倒さず、`upsertAttackPattern` + 書き戻し配線の最小閉ループを正式採用と確定した。
+
+## 8. T2-③: 暗記 vs 汎化 — 照合器ブラインドの lever ホールドアウト（2026-06-06）
+
+ハーネス: `scripts/measure-generalization.ts`。in-loop 走は §1〜§7 と同条件（同一 step・no-break・persist ON のみ差分）。ホールドアウト評価は lever ベースの完全決定論（Gemini 不使用）＝ `total = computeScore(levers) + matchKnownScams 由来の known-scam bonus`。`threshold=70`、bonus は `+5/match`・上限 `+15`。
+
+### 8.1 ホールドアウトの構築原則（照合器ブラインド・現実性のみ）
+
+過去版は「active レバーを seed 署名に寄せて 3/6 を作る／非 flip 対照を逆算で置く／lever-score を rescue 帯に乗せる」という**逆算**を含んでいた。これは flip 結果を設計で事前確定させる汚染（寄せる＝正の逆算、離す＝鏡像の負の逆算）なので全廃。現行は:
+
+- 照合器(`matchKnownScams`)の enum セットを見ない・寄せない・離さない。
+- 各 holdout は「現実的な subtle BEC で、攻撃側 evolve が生成しない型」という現実性だけで作る。攻撃側への唯一の制約は「seed 系統に無い `(authority×cta)` を選ぶ」（＝未到達の担保。`evolve` は authority/cta/incentive.type/urgency.tactic を変えないので seed 系統の `(authority×cta)` は固定）。
+- 残り4レバーは現実の手口からそのまま起こし、seed 署名と一致するかは成り行きに任せる。lever-score がどの帯に落ちるかも結果。
+- ⇒ 各 holdout が flip するかは「走らせるまで不明」。
+
+seed は §1 の3本（bec-exec-wire / vendor-invoice / platform-credential-soft）。育った corpus は14件（bec 3 + vendor 4 + platform 7、すり抜けラウンドのみ書き戻し）。
+
+### 8.2 結果（BEFORE 空コーパス → AFTER 育成後）
+
+holdout recall: **BEFORE 0/6 → AFTER 3/6 = 0.50**（設計ではなく成り行きで出た）。
+
+| holdout (unseen authority×cta) | leverScore | matches | total | detected | tier |
+|---|---|---|---|---|---|
+| exec-portal-login (executive×input_credentials) | 61 | 4 | 76 | YES | **robust** |
+| exec-app-install (executive×install_app) | 59 | 3 | 74 | YES | **robust** |
+| exec-vishing-call (executive×call_number) | 63 | 3 | 78 | YES | **coinflip依存** |
+| vendor-thread-link (business_partner×click_link) | 41 | 5 | 56 | no | — |
+| vendor-portal-login (business_partner×input_credentials) | 51 | 5 | 66 | no | — |
+| platform-settle-wire (platform×transfer_money) | 53 | 1 | 58 | no | — |
+
+### 8.3 (a)/(b) 自己点検の厳格化 — 3段階分類
+
+旧判定は「能動一致が1つでもあれば汎化」＝`matchedActive.length>0`。これは exec-vishing-call（能動一致 authority+personalization の**2つ** + coin-flip の incentive で 3/6 到達）を「汎化」と過大評価した。厳格化の基準を導入:
+
+> **判定基準: 能動レバーのみで類似度閾値(3/6=0.5)に到達するか。** 照合から (b) アーティファクト（`incentive.type` の reward/fear coin-flip、`urgency`/`isolation`="none"・`personalization`="broadcast"・`authority`="none" の不在一致）を除いた「能動レバーのみの bonus」で `leverScore` が単独で `threshold` に届けば **robust 汎化**（coin-flip を抜いても flip が残る）。
+
+- **robust（2件）**: exec-portal-login / exec-app-install。能動レバー authority(executive)+personalization(targeted)+isolation(secrecy) の**3つだけで 3/6** に到達し、能動 bonus だけで total≥70。incentive(fear=coin-flip)は上乗せで load-bearing ではない。→ 「役員＋ターゲット化＋内密」という BEC 構造を seed 系統から学び、未見の `(exec×input_credentials / exec×install_app)` に転移した本物の汎化。
+- **coin-flip 依存（1件・汎化に数えない）**: exec-vishing-call。能動一致は authority+personalization の2つのみ（isolation=`direct_channel` は corpus に出現せず不一致、`evolve` は none→secrecy しか作らない）。3/6 到達に必要な3つ目は coin-flip の incentive(fear)。これを抜くと 2/6=0.33 で flip 消失。能動 bonus=+0、`leverScore 63 < 70`。
+- **非 flip（3件）**: vendor 2件は urgency=none・isolation=none で lever-score が rescue 床(55)未満（+15 でも 70 未満）＝「自然な業務メールはレバー化すると弱い」正直な結果。platform-settle-wire は personalization=segmented が platform seed 系統の targeted とズレ 1 doc しか閾値超えせず +5 のみ。いずれも対照として置いたのではなく成り行き。
+
+**3段階の集計: robust 汎化 2 / coin-flip 依存 1 / 非 flip 3。汎化として数えるのは robust の 2 件のみ。**
+
+### 8.4 実装と検証（検知器は不変）
+
+- 解釈ロジックは `src/lib/generalizationCheck.ts`（評価側）に分離。`matchKnownScams` の similarity と「total≥70 で flip」の検知本体には**一切触れていない**。足したのは flip した件の3段階分類だけ。
+- ユニットテスト `src/lib/__tests__/generalizationCheck.test.ts`: 本走の生データ（14件 corpus + 6 holdout）を golden fixture にして、**robust 2 / coin-flip 依存 1 / 非 flip 3 を Gemini 不要で決定論的に再現**。特に「能動2 + coin-flip1 で 3/6」の exec-vishing-call が coin-flip 依存に分類されることを検証。全スイート 195 passed。
+
+### 8.5 判定と T5 への含意
+
+- 修正は機能した: flip/非 flip を設計で事前確定させず、各 holdout の運命は走らせるまで不明だった。AFTER 0.50 は設計の産物ではない。汎化として誠実に数えられるのは robust 2 件。
+- ただし**捕捉できているのは executive 系統に構造が近い未見型だけ**で、vendor/platform の subtle 型は lever-score 床で取りこぼす。「現状の照合（6 enum main-value + isolation 床）では subtle BEC の一部を捕捉できない」正直な限界 → **T5（照合式の改善: 床の見直し / coin-flip レバーの重み抜き / similarity の細粒度化）**の入力。
+- 設計§7 の区別: これは私が現実の手口をレバー化した **lever 水準の汎化プローブ**であって、フィッシング対策協議会/IPA 等の**実物サンプルを物理隔離した外部 holdout** ではない。「実際に人を守れる」証拠としては後者が別途必要（宿題として残る）。
+- 再現（決定論部のみの検証）: `npx vitest run src/lib/__tests__/generalizationCheck.test.ts`。実走（コーパス育成込み）: `GOOGLE_CLOUD_PROJECT=ai-bridging GOOGLE_CLOUD_LOCATION=us-central1 DEMO_MODE=true npx tsx scripts/measure-generalization.ts`（in-loop の investigation bonus は非決定的なので書き戻し件数は揺れうる）。
+
+## 9. T5 柱1(ii): 照合式の能動限定（coin-flip レバーの重み抜き）— 検知器を初めて変更（2026-06-06）
+
+T2 を通して不変に保ってきた検知器本体（`matchKnownScams` の similarity）を、柱1で初めて変更した。変更前に「何をもって改善とみなすか」を過適合を避ける形で確定（設計合意）し、**ステップ2（予測の紙）をステップ3（検知器変更）の前に固定**してから実装した。
+
+### 9.1 何を変えたか（除外方式・denominator 6 固定）
+
+- `matchKnownScams.similarity` の **numerator を「main-value 一致かつ能動レバー」のみ**に限定。アーティファクト（`incentive.type` の reward/fear coin-flip、`urgency`/`isolation`="none"・`personalization`="broadcast"・`authority`="none" の不在一致）は一致しても **0 点**。**denominator は 6 固定**（能動可能レバー数に縮めない＝0.5 閾値の意味をパターン非依存に保つ）。
+- 分類ロジック `classifyMatchedLever` / `mainValue` / `LEVER_KEYS` を中立モジュール `src/lib/levers.ts` に抽出。依存方向は **検知器→levers・評価側(generalizationCheck)→levers** のみ。検知器は評価側に依存しない（循環回避）。
+- 検知器契約テスト1件を更新: exact match のスコアは **1.0 → 5/6**。byte 同一パターンでも incentive(coin-flip)を credit しないため。これは (ii) の正しい帰結であって退行ではない。
+
+### 9.2 補強点（重要・(ii) の成功を「取りこぼし減」と誤評価しない）
+
+> **(ii) は recall を上げない。** numerator から能動外を抜くと similarity は単調に下がるだけで、`old 非match → 新 match` は原理的に起きない（old 非match ⇒ 一致≤2/6 ⇒ 能動一致≤2 ⇒ 新 numerator も <0.5）。**(ii) の効能は「coin-flip 依存の偽 flip を消す」＝精度・誠実さの改善**であって、subtle BEC の取りこぼし救済ではない。**subtle 救済は (iii)（similarity 細粒度化）/ (i)（床の見直し）の領分。**
+
+(ii) を「捕捉漏れが減ること」で評価しない。near-threshold（bonus が load-bearing）帯でしか効かないので、新 holdout が **(ii) に無反応でも失敗ではなく**「(ii) の効能は狭い」という正直な観測として記録する。
+
+### 9.3 回帰（予測の紙）= 検知器変更前に固定・実装後に一致を確認
+
+`src/lib/__tests__/generalizationCheck.test.ts` に予測を固定（検知器を触る前に緑）:
+
+- **旧ルール（full similarity）= robust 2 / coinflip_dependent 1 / 非flip 3**（変更前の挙動を凍結した3段階オラクル）。
+- **新ルール（active-only similarity）= robust 2 / 非flip 4**（coinflip tier は構造的に消える）。
+- **旧→新の差分は厳密に `{exec-vishing-call: coinflip_dependent → non_generalization}` の1件のみ**、他5件不変。
+  - robust 2件（exec-portal-login / exec-app-install）は能動のみで 3/6（auth+pers+iso）に届くので維持。
+  - 非flip 3件（vendor×2 / platform-settle-wire）は `leverScore + 上限+15 < 70`＝**bonus 改変では原理的に動かない不変アンカー**（床落ち＝(ii) の対象外、(i)/(iii) 領分）をテストで証明。
+  - exec-vishing-call は能動一致が auth+pers の2のみ、3つ目が coin-flip(incentive)。これを抜くと 2/6<0.5 で match 消失＝**偽 flip の正しい除去**。
+
+実装後の全スイート: **199 passed / 6 skipped**、`tsc --noEmit` clean。**予測差分どおり（破綻は検知器契約テスト exact=5/6 の1件のみ、6 holdout の予測差分は不侵）。** 予測外の変化＝バグの混入は無し。
+
+### 9.4 検証（実力）= 新しい照合器ブラインド holdout の素 recall（実走は別途）
+
+物差し（旧検知器を凍結した3段階オラクル）と実力は分けて測る。実力は**変更を一切見ていない新 holdout の素 recall**で測り、既知6件で robust が増えることは成功条件にしない。
+
+- `scripts/measure-generalization.ts` に **新規 blind holdout 5件**を追加（§8.1 と同一原則＝照合器ブラインド・現実性のみ・(authority×cta) は seed 系統に無い。**加えて (ii) の能動/アーティファクト分類もブラインド**＝active 一致が3に届くよう寄せない・lever-score 帯も狙わない・flip は走らせるまで不明）。系統は vendor/platform に加え seed 未到達の authority（government/delivery/financial）も現実性として含む:
+  - `gov-tax-refund-portal`(government×input_credentials) / `delivery-redelivery-link`(delivery×click_link) / `vendor-bankchange-call`(business_partner×call_number) / `platform-qr-reauth`(platform×scan_qr) / `bank-fraud-alert-call`(financial×call_number)。
+- 未到達担保は `main()` の**構築不変条件チェック**で機械保証（全 holdout の (authority×cta) が seed 系統に無いことを走る前に assert、違反で停止）。
+- 後 (ii) は検知器自体が能動限定なので、flip した holdout の tier は構造的に **robust か non_generalization のみ**（coinflip_dependent は出ない）。
+- **正直な期待**: (ii) は床に触れないので vendor/platform/その他の subtle 型は床落ちが残りうる＝「(ii) では救えない」所見として受け入れる。新 holdout が (ii) に無反応でも失敗としない。
+- 実走（要 Vertex ADC + Firestore、コーパス育成込み）:
+  `GOOGLE_CLOUD_PROJECT=ai-bridging GOOGLE_CLOUD_LOCATION=us-central1 DEMO_MODE=true npx tsx scripts/measure-generalization.ts`
+
+### 9.5 実走結果（2026-06-06・新検知器 active-only）
+
+育成コーパス14件（bec3+vendor4+platform7、前回と同構成）。holdout recall: **BEFORE 0/11 → AFTER 2/11 = 0.18**。cleanup でコーパス0復帰・DoD OK。
+
+| holdout | leverScore | matches | total | detected | tier | active一致 | artifact一致 |
+|---|---|---|---|---|---|---|---|
+| exec-portal-login | 61 | 4 | 76 | YES | **robust** | authority,personalization,isolation | incentive |
+| exec-app-install | 59 | 3 | 74 | YES | **robust** | authority,personalization,isolation | incentive |
+| exec-vishing-call | 63 | **0** | 63 | no | — | — | — |
+| vendor-thread-link / vendor-portal-login / platform-settle-wire | 41/51/53 | 0 | — | no | — | — | — |
+| gov-tax-refund-portal | 43 | 0 | 43 | no | — | — | — |
+| delivery-redelivery-link | 31 | 0 | 31 | no | — | — | — |
+| vendor-bankchange-call | 45 | 0 | 45 | no | — | — | — |
+| platform-qr-reauth | 43 | 0 | 43 | no | — | — | — |
+| bank-fraud-alert-call | 51 | 0 | 51 | no | — | — | — |
+
+**回帰（旧6件・答え合わせ）**: 実走の旧6件は **robust2/非flip4** で、§9.3 の決定論予測と**完全一致**。旧検知器との唯一の差分は `exec-vishing-call`（matches 3→**0**＝coin-flip 偽 flip の消失で coinflip flip→非flip）。実走特有のズレ（コーパス育成の Gemini 非決定が照合に波及）は**無し**。
+
+**検証（新5件・(ii) の効能範囲）を三観点で**:
+1. **能動構造の汎化再現** — 新5件では**観測されず**。ブラインド構築が executive+targeted+secrecy の能動三つ組（コーパスが robust 報酬する署名）を持つ型を新5件に偶然含めなかった＋全件が後述の床落ち。失敗ではなく「その帯にプローブが落ちなかった」。再現は旧 robust 2件（exec-portal/exec-app、active一致=auth+pers+iso）が live でも tier robust を保ったことで裏付く。
+2. **coin-flip 掃除** — 新5件では**観測不能**（全件床落ちで bonus 関与帯に届かない）。掃除の実証は旧 set の `exec-vishing-call`（leverScore 63 で旧なら coin-flip flip→新で matches 0・非flip）。
+3. **床落ちは救えない** — 新5件**全件が床落ち（bonus 上限+15 でも max 66<70）かつ matches 0**。`(ii)` は lever-score 床に触れないので捕捉不能のまま＝**「subtle 非executive BEC の支配的ゲートは床であって照合ではない」**を実証。→ 次手 **(iii) similarity 細粒度化 /(i) 床の見直し** の必要性が確定。
+
+**判定**: (ii) は設計通り機能（掃除＝偽flip除去、recall 不変、床落ちは不可侵）。新5件 recall 0 は (ii) の失敗ではない（(ii) は救済でなく掃除）。**物差し（旧 full-similarity オラクル）と新検知器の差分は厳密に exec-vishing-call 1件**で、これが「物差しが変わった（予測済み1件）」と「実力（新holdout素recall=0/5＝床落ち）」を明確に分離している。次の一歩は床/細粒度化＝(i)/(iii) に決まる。

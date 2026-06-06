@@ -32,14 +32,21 @@ describe("matchKnownScams", () => {
     expect(result).toEqual({ ok: true, matches: [] });
   });
 
-  it("returns similarity 1.0 for an exact lever-enum match", async () => {
+  it("scores an exact match at 5/6, not 1.0 — the incentive coin-flip is never credited", async () => {
+    // T5 pillar-1 (ii): similarity counts ACTIVE matched levers only. BASE_LEVERS
+    // has 5 active main-values (urgency/authority/callToAction/personalization/
+    // isolation) + 1 artifact (incentive.type = fear, a reward/fear coin-flip).
+    // Even a byte-identical pattern matches on 5/6 because the coin-flip lever is
+    // structurally excluded from the numerator (denominator stays 6).
     vi.mocked(listAttackPatterns).mockResolvedValue([
       patternWithLevers("p-exact", BASE_LEVERS),
     ]);
     const result = await matchKnownScams({ levers: BASE_LEVERS });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.matches).toEqual([{ id: "p-exact", similarity: 1 }]);
+      expect(result.matches).toHaveLength(1);
+      expect(result.matches[0].id).toBe("p-exact");
+      expect(result.matches[0].similarity).toBeCloseTo(5 / 6, 10);
     }
   });
 

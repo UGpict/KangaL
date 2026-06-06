@@ -1,15 +1,10 @@
 import type { AttackPattern } from "@/types/attackPattern";
 import { listAttackPatterns } from "@/lib/firestore";
-import { LEVER_WEIGHTS, type LeverKey } from "@/lib/weights";
+import { LEVER_KEYS, classifyMatchedLever, mainValue } from "@/lib/levers";
 import type { KnownScamMatch } from "@/types/investigation";
 
-// Single source of truth for lever count — never hardcode /6. Adding a 7th
-// lever (unlikely but possible) propagates automatically through this and
-// the similarity computation.
-const LEVER_KEYS = Object.keys(LEVER_WEIGHTS) as LeverKey[];
-
 // Hit threshold for "this matches a known scam pattern". 0.5 = at least 3 of
-// 6 main-enum values match. Below this is treated as noise; without the
+// 6 ACTIVE main-enum values match. Below this is treated as noise; without the
 // threshold a freshly-seeded scam corpus would match every pattern at 0/6 = 0
 // similarity once we start adding patterns with sparse enum overlap.
 export const KNOWN_SCAM_HIT_THRESHOLD = 0.5;
@@ -24,38 +19,33 @@ export type MatchKnownScamsResult =
   | { ok: true; matches: KnownScamMatch[] }
   | { ok: false; reason: string };
 
-// FUTURE: replace with vector-search similarity (Vertex Text Embeddings +
-// Firestore vector field) once the scam corpus is large enough that
-// enum-only overlap misses semantically-equivalent attacks. For MVP we use
-// the dominant enum value of each lever — fast, deterministic, and good
-// enough to demonstrate the routing.
-function mainValue(
-  key: LeverKey,
-  levers: AttackPattern["levers"],
-): string {
-  switch (key) {
-    case "urgency":
-      return levers.urgency.tactic;
-    case "authority":
-      return levers.authority.impersonates;
-    case "incentive":
-      return levers.incentive.type;
-    case "callToAction":
-      return levers.callToAction.action;
-    case "personalization":
-      return levers.personalization.level;
-    case "isolation":
-      return levers.isolation.tactic;
-  }
-}
-
+// T5 pillar-1 (ii): the numerator counts ACTIVE matched levers only. A matched
+// lever is credited only when classifyMatchedLever marks it active — i.e. it
+// reflects an attacker's deliberate choice. Artifact matches (incentive.type's
+// reward/fear coin-flip; absence matches like urgency/isolation "none",
+// personalization "broadcast", authority "none") are NOT evidence the detector
+// recognized an attack structure, so they contribute 0.
+//
+// This is a PRINCIPLE-driven change, not holdout fitting: "absence and a
+// coin-flip are not evidence" is stated independently of any holdout, and it
+// can only LOWER similarity (the numerator shrinks) — it is structurally unable
+// to inflate recall on known cases. It is the detector-side mirror of the
+// evaluation-side strictening validated in T2-③ (generalizationCheck).
+//
+// The denominator stays fixed at LEVER_KEYS.length (6) — NOT the count of
+// active-capable levers — so the 0.5 threshold keeps a single, pattern-
+// independent meaning (shrinking the denominator per pattern would make the
+// threshold easier for absence-heavy patterns = a tuning knob we refuse).
 function similarity(
   a: AttackPattern["levers"],
   b: AttackPattern["levers"],
 ): number {
   let matched = 0;
   for (const key of LEVER_KEYS) {
-    if (mainValue(key, a) === mainValue(key, b)) matched += 1;
+    const va = mainValue(key, a);
+    if (va === mainValue(key, b) && classifyMatchedLever(key, va) === "active") {
+      matched += 1;
+    }
   }
   return matched / LEVER_KEYS.length;
 }
