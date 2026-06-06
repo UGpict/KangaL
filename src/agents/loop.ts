@@ -4,11 +4,11 @@ import {
   type DetectionFeedback,
   type GenerateAttackPatternInput,
 } from "@/agents/attacker";
-import { analyzeStructure } from "@/agents/analyzeStructure";
-import { investigate, type InvestigateInput } from "@/agents/investigate";
-import { computeScore, judge } from "@/agents/judge";
+import { investigate } from "@/agents/investigate";
+import { judge } from "@/agents/judge";
+import { judgeSampleViaPipeline } from "@/agents/judgeSample";
 import { assertDemoMode } from "@/lib/demoMode";
-import { upsertAttackPattern } from "@/lib/firestore";
+import { upsertAttackPattern } from "@/lib/corpusWriter";
 import {
   getDetectionThreshold,
   recordRound,
@@ -62,86 +62,10 @@ export type LoopAgents = {
 
 export type AgentOverrides = Partial<LoopAgents>;
 
-// T3: real sample judging. A ground-truth Sample carries only a messageBody
-// (道B: never a lever-encoded attack), so unlike the loop's pattern path (which
-// already holds levers), a sample must first be structurally analyzed. This is
-// exactly the paste path of /api/judge (route.ts): analyzeStructure → investigate
-// → judge. The returned score is on the same 0-100 scale recall/fpr threshold
-// against getDetectionThreshold() — no second threshold is defined here.
-// A degraded structure analysis (Gemini failure) yields score 0 = 判定保留 ⇒
-// not detected, matching the route's degraded branch. `round` is unused but kept
-// in the agent signature: re-scoring each round is meaningful because investigate
-// reads the growing attackPatterns corpus (closed loop, T2/V2).
-// 柱2 二段運用の注入点: investigation 層だけを live/キャッシュで差し替えられる
-// ようにする唯一の seam。analyzeStructure（防御の知覚）と judge は固定のまま。
-// - live（既定）: deps を省略 → 実 investigate（Web Risk/RDAP 等の関数呼び出し）。
-//   実運用の実力値レポート用。
-// - cached: 凍結済み InvestigationReport を返す関数を渡す。BEFORE/AFTER 差分主張と
-//   本番デモ用。investigate を固定することで、run 間の非決定を analyzeStructure
-//   由来だけに絞れる（4分類 attribution の missed-perception が純粋に知覚失敗を指す）。
-// キャッシュ関数は levers を無視し sample（message）でキーするのが想定（知覚が
-// run ごとにブレても同じ凍結 report を返す）。
-export type InvestigateFn = (
-  input: InvestigateInput,
-) => Promise<InvestigationReport>;
-
-// 柱2 計器（holdoutEval）に渡す判定素材。score だけでなくレバー素点と bonus 内訳
-// （known-scam＝self-play corpus 由来 / それ以外＝外部調査）を生点で返す。これにより
-// 評価器側が「warm の伸びが corpus 由来か調査由来か」を counterfactual で切り分けられる。
-export type SampleJudgeDetail = {
-  score: number;
-  degraded: boolean;
-  perceivedLevers: AttackPattern["levers"] | null;
-  leverScore: number;
-  knownScamBonusRaw: number;
-  otherInvestigationBonusRaw: number;
-};
-
-export async function judgeSampleDetailed(
-  sample: Sample,
-  deps: { investigate?: InvestigateFn } = {},
-): Promise<SampleJudgeDetail> {
-  const investigateFn = deps.investigate ?? investigate;
-  const analysis = await analyzeStructure(sample.messageBody);
-  if (analysis.degraded) {
-    return {
-      score: 0,
-      degraded: true,
-      perceivedLevers: null,
-      leverScore: 0,
-      knownScamBonusRaw: 0,
-      otherInvestigationBonusRaw: 0,
-    };
-  }
-  const investigation = await investigateFn({
-    message: sample.messageBody,
-    levers: analysis.levers,
-  });
-  const result = await judge(analysis.levers, investigation);
-  let knownScamBonusRaw = 0;
-  let otherInvestigationBonusRaw = 0;
-  for (const item of result.investigationBonus.items) {
-    if (item.source === "knownScams") knownScamBonusRaw += item.points;
-    else otherInvestigationBonusRaw += item.points;
-  }
-  return {
-    score: result.score,
-    degraded: false,
-    perceivedLevers: analysis.levers,
-    leverScore: computeScore(analysis.levers),
-    knownScamBonusRaw,
-    otherInvestigationBonusRaw,
-  };
-}
-
-export async function judgeSampleViaPipeline(
-  sample: Sample,
-  deps: { investigate?: InvestigateFn } = {},
-): Promise<{ score: number }> {
-  const { score } = await judgeSampleDetailed(sample, deps);
-  return { score };
-}
-
+// T3 の sample 判定（道B の messageBody を /api/judge と同じ paste パイプラインに
+// 通す read-only エントリ）は src/agents/judgeSample.ts へ分離した。warm（runLoop,
+// 書き込みあり）と判定/評価（read-only）を *別モジュール* に割ることで、コーパス
+// writer への到達不能を judgeSample.boundary.test.ts が file 単位で守れる（不変条件A）。
 const DEFAULT_AGENTS: LoopAgents = {
   generateAttackPattern,
   investigate: (pattern) => investigate({ message: "", levers: pattern.levers }),

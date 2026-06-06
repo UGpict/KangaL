@@ -27,9 +27,9 @@ import { evolve } from "@/agents/attacker";
 import { matchKnownScams } from "@/tools/matchKnownScams";
 import {
   listAttackPatterns,
-  upsertAttackPattern,
   ATTACK_PATTERN_COLLECTION,
 } from "@/lib/firestore";
+import { upsertAttackPattern } from "@/lib/corpusWriter";
 import {
   BONUS_KNOWN_SCAM_CAP,
   BONUS_KNOWN_SCAM_PER_MATCH,

@@ -1,5 +1,5 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
-import { judgeSampleDetailed, judgeSampleViaPipeline } from "@/agents/loop";
+import { judgeSampleDetailed, judgeSampleViaPipeline } from "@/agents/judgeSample";
 import { evaluateSamples, getDetectionThreshold } from "@/lib/metrics";
 import type { AttackPattern, Sample } from "@/types/attackPattern";
 

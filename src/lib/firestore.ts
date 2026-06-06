@@ -39,22 +39,9 @@ export async function upsertBenignSample(
   });
 }
 
-// 最小閉ループ (PLAN-v2 T2/V2): defender 経路がすり抜けた AttackPattern を
-// matchKnownScams が読む attackPatterns コレクションへ書き戻すための writer。
-// 道B invariant: 保存するのは AttackPattern スキーマ（レバー＋channel）のみで、
-// 完成した詐欺文は一切持たない（引数型が AttackPattern であることがそれを保証する）。
-// id は doc id に使い、フィールドには含めない（listAttackPatterns が d.id で復元）。
-// detectionResult（その回限りの検出状態）はコーパスの素性に不要なので保存しない。
-export async function upsertAttackPattern(pattern: AttackPattern): Promise<void> {
-  const doc: Record<string, unknown> = {
-    generation: pattern.generation,
-    sourceContext: pattern.sourceContext,
-    channel: pattern.channel,
-    levers: pattern.levers,
-  };
-  if (pattern.parentId !== undefined) doc.parentId = pattern.parentId;
-  await getDb().collection(ATTACK_PATTERN_COLLECTION).doc(pattern.id).set(doc);
-}
+// 道B invariant の writer（upsertAttackPattern）は src/lib/corpusWriter.ts へ分離した。
+// 理由は「コーパスへの書き込み能力」を judge/eval パスから *モジュール境界で* 切り離し、
+// 不変条件A を judgeSample.boundary.test.ts で静的に守るため。firestore.ts は reader のみ。
 
 export async function listBenignSamples(): Promise<
   Array<{ id: string } & BenignSample>

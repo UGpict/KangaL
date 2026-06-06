@@ -21,7 +21,8 @@
 
 process.env.DEMO_MODE = process.env.DEMO_MODE ?? "true";
 
-import { judgeSampleDetailed, runLoop, type SampleJudgeDetail } from "@/agents/loop";
+import { runLoop } from "@/agents/loop";
+import { judgeSampleDetailed, type SampleJudgeDetail } from "@/agents/judgeSample";
 import { listBenignSamples } from "@/lib/firestore";
 import { listRealScamHoldout } from "@/lib/realScamHoldout";
 import {
