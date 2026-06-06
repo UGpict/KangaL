@@ -98,6 +98,28 @@ describe("judgeSampleViaPipeline (T3 配線)", () => {
     });
   });
 
+  it("柱2 seam: deps.investigate を渡すと既定の investigate ではなく注入版が呼ばれる", async () => {
+    // cached（凍結 report）注入を模す。bonus 内訳が default と区別できるよう total を立てる。
+    const injected = vi.fn(async () => ({
+      truncated: false,
+      truncatedReason: null,
+      bonus: { items: [], total: 0, capped: false },
+    }));
+
+    await judgeSampleViaPipeline(
+      { kind: "scam", messageBody: SCAM_BODY },
+      { investigate: injected },
+    );
+
+    // 注入版が本文＋知覚レバーを受け取り、既定の investigate は触られない
+    // （非決定が investigate 由来から消え、analyzeStructure だけに絞られる）。
+    expect(injected).toHaveBeenCalledWith({
+      message: SCAM_BODY,
+      levers: STRONG_SCAM_LEVERS,
+    });
+    expect(investigate).not.toHaveBeenCalled();
+  });
+
   it("詐欺サンプルは検出側・良性サンプルは非検出側に分かれる（placeholder 解消の核）", async () => {
     const threshold = getDetectionThreshold();
     const scam = await judgeSampleViaPipeline({

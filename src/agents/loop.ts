@@ -5,7 +5,7 @@ import {
   type GenerateAttackPatternInput,
 } from "@/agents/attacker";
 import { analyzeStructure } from "@/agents/analyzeStructure";
-import { investigate } from "@/agents/investigate";
+import { investigate, type InvestigateInput } from "@/agents/investigate";
 import { judge } from "@/agents/judge";
 import { assertDemoMode } from "@/lib/demoMode";
 import { upsertAttackPattern } from "@/lib/firestore";
@@ -72,12 +72,27 @@ export type AgentOverrides = Partial<LoopAgents>;
 // not detected, matching the route's degraded branch. `round` is unused but kept
 // in the agent signature: re-scoring each round is meaningful because investigate
 // reads the growing attackPatterns corpus (closed loop, T2/V2).
+// 柱2 二段運用の注入点: investigation 層だけを live/キャッシュで差し替えられる
+// ようにする唯一の seam。analyzeStructure（防御の知覚）と judge は固定のまま。
+// - live（既定）: deps を省略 → 実 investigate（Web Risk/RDAP 等の関数呼び出し）。
+//   実運用の実力値レポート用。
+// - cached: 凍結済み InvestigationReport を返す関数を渡す。BEFORE/AFTER 差分主張と
+//   本番デモ用。investigate を固定することで、run 間の非決定を analyzeStructure
+//   由来だけに絞れる（4分類 attribution の missed-perception が純粋に知覚失敗を指す）。
+// キャッシュ関数は levers を無視し sample（message）でキーするのが想定（知覚が
+// run ごとにブレても同じ凍結 report を返す）。
+export type InvestigateFn = (
+  input: InvestigateInput,
+) => Promise<InvestigationReport>;
+
 export async function judgeSampleViaPipeline(
   sample: Sample,
+  deps: { investigate?: InvestigateFn } = {},
 ): Promise<{ score: number }> {
+  const investigateFn = deps.investigate ?? investigate;
   const analysis = await analyzeStructure(sample.messageBody);
   if (analysis.degraded) return { score: 0 };
-  const investigation = await investigate({
+  const investigation = await investigateFn({
     message: sample.messageBody,
     levers: analysis.levers,
   });
