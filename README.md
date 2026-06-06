@@ -1,36 +1,112 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# KangaL（カンガル）
 
-## Getting Started
+> 進化して、詐欺に食らいつく。
+> 進化し続ける詐欺から、非IT層を守る番犬。
 
-First, run the development server:
+攻撃AI（狼）と防御AI（番犬）が自律的に攻防し、検知精度を育て続ける自己改善型の詐欺検知システム。
+怪しいメッセージを貼り付けると詐欺かどうかを判定し、**「なぜ危ないか」を非ITの人にも分かる日本語で説明**する。
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+対象ハッカソン: Findy × Google Cloud Japan「DevOps × AI Agent Hackathon」（提出 2026-07-10 / 決勝 2026-08-19）。
+
+---
+
+## 触ってみる（公開デモ）
+
+- ライブ判定（受信箱 UI）: https://kangal-649847191589.us-central1.run.app/
+- 攻防ループの可視化（録画用デモ）: https://kangal-649847191589.us-central1.run.app/demo
+
+`/` はサンプル文や任意の文面をその場で Gemini が判定するライブ動線。`/demo` は攻防1サイクルの可視化（後述「デモの位置づけ」を参照）。
+
+---
+
+## 課題
+
+- 中小企業の非IT層（警察から詐欺注意の警告を受けるような経営層）に、自然な日本語の巧妙な詐欺が刺さる。
+- 既存フィルターはルールベースで「ブロックする」だけ・理由を説明しない。生成AIで文面が自然化し、ルールに引っかからない。
+- 攻撃が進化し続けるなら、防御も進化し続ける仕組みが要る。「ブロック」ではなく「なぜ危ないか分かって次は自分で気づける」教育効果を狙う。
+
+## アプローチ — 検知器の CI/CD を AI エージェントが回す
+
+攻撃エージェント（狼）と防御エージェント（番犬）の攻防を、検知器の継続的デリバリーとして捉える:
+
+```
+攻撃が検知器の死角を発見   = 脆弱性スキャン
+ ↓ すり抜けた型を事例DBへ書き戻し = パッチ
+ ↓ 次ラウンドで再判定         = 継続的デリバリー
+ ↓ 攻撃が型を組み替えて再テスト  = 回帰テスト
+ ↓ 検知率の推移を可視化        = 監視
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+→ DevOps と AI Agent の両テーマを同時に射抜く構成。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 道B — 攻撃側に実弾を作らせない（安全設計の背骨）
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+攻撃エージェントは**そのまま送れる完成詐欺文を生成・保存しない**。代わりに詐欺を **6つの心理レバーの設定値の集合**（`AttackPattern`）として扱い、型だけを進化させる。完成文がどこにも残らないため、デュアルユースの危険物が生まれない。
 
-## Learn More
+6レバー: 緊急性 / 権威（なりすまし）/ 報酬・恐怖 / 誘導（行動喚起）/ 個人化 / 孤立化。
 
-To learn more about Next.js, take a look at the following resources:
+## アーキテクチャ
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+**防御エージェント（番犬）のパイプライン:**
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. **構造分解** — メッセージから6レバーを逆算（Gemini / `analyzeStructure`）。
+2. **能動調査** — anchor（`matchKnownScams` を必ず1回）＋ dynamic（URL レピュテーション / ドメイン年齢 / 送信者認証 / 公的アラート照合の4ツールを入力に応じて選ぶ function-calling）。
+3. **総合判断** — レバー×重みの素点に調査ボーナスを加点（減点なし・上限+25）し、確信度スコアと「なぜ危ないか」の日本語説明を生成。
+4. **蓄積** — すり抜けた型を Firestore に書き戻す（次の照合材料＝自己改善）。
+5. **フィードバック** — 攻撃側へ検知結果を返す。
 
-## Deploy on Vercel
+**技術スタック:** Next.js (TypeScript) / `@google/genai`（Vertex 経由・Gemini 2.5 Flash）/ Cloud Run / Firestore / Google Web Risk（コード実装済み・本番は鍵未配線）/ RDAP。Cloud Run へ鍵レス（ADC）でデプロイ。
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+**協調ループの実装:** 攻撃⇄防御の協調は `loop.ts` の**手組みオーケストレーション（for-loop）**で、唯一の動的判断（調査のツール選択）は既に function-calling にあるためフレームワーク利得が薄い、という判断による。ADK は実験段階（`spike/` 限定）で本番は `@google/genai` 直叩き。
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+**リージョン構成:** Cloud Run / Vertex は `us-central1`、Firestore (default) は `asia-northeast1` で**越境**している。機能成立は確認済み（本番 `matchKnownScams` は degrade しない）で、レイテンシ最適化は将来課題。
+
+## 測定の誠実さ
+
+検知力は**単発スコアではなく recall / FPR を主軸**に、coverage（攻略した型の種類数）を補助として語る。recall 単体は「全部クロ」で100%になる罠なので、誤検知を増やさず recall を育てることを指標にしている（非IT向けは誤検知＝オオカミ少年化が致命的）。
+
+現時点で実測から正直に言えること:
+
+- **in-loop の暗記**: 閉ループですり抜けた型を書き戻すと、次ラウンドで `matchKnownScams` が捕捉する。「検知率が上がっていくアーク」はこの機構で出る。
+- **自作レバー holdout への汎化**: 照合器ブラインドで作った未見型に対し、能動骨格（権威＋個人化＋孤立化=secrecy）が一致すれば cta（誘導手段）が違っても捕捉（robust 2件）。系統非依存（executive 以外でも再現）であることまで実測で確認。
+- **実物サンプルへの実力（外部 holdout・n=6）**: フィッシング対策協議会＋実受信の本物詐欺を物理隔離して評価。recall は判定床に依存し、**床70 で 1/6・床60 で 4/6 [30–90%]（Wilson 95% CI）**。隣接床の CI が重なるため「最適な床」は小標本では点として確定できず、**バンドとして提示**している。重要な陽性所見として **missed-perception=0**＝「攻撃と知覚はできている。厳しいのは判定床」。
+
+### 既知の限界（隠さない）
+
+- **Web Risk は本番未配線**＝`urlReputation` は degrade する（鍵を入れれば有効化、加点のみなので骨格は動く）。
+- **商用良性サンプル（FPR の本番ストレッサー）は未投入**＝床を下げたときの真の誤検知リスクはまだ測れていない。床の最終決定は保留。
+- **subtle な非executive BEC は床落ちで取りこぼす公算**。これは現在地であり、床見直しの正しい動機。
+
+スコアは UI 上の確信度表示（判定カード）として使うもので、検知力の証拠としては上記の recall / FPR / holdout を見てほしい。
+
+## デモの位置づけ（正直に）
+
+`/demo` の攻防アークは**実走の決定論リプレイ（録画用に固定したシナリオ）**であり、その場でライブの攻撃AIが回っているわけではない。協調が本物であることは `/` のライブ受信箱（実 Gemini パイプライン）が担保する。デモ動線では攻撃エージェントは HTTP 表面に露出しない設計（`DEMO_MODE` ゲート＋ルート分離）。
+
+## ローカル実行
+
+```bash
+npm install
+npm run dev        # http://localhost:3000
+npm run build      # standalone ビルド
+npx vitest run     # テスト
+npx tsc --noEmit   # 型チェック
+```
+
+Vertex/Gemini を叩くには `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` と ADC が必要。攻撃⇄防御ループや `/demo` は `DEMO_MODE=true` を立てたときのみ有効（既定では攻撃側は無効＝フェイルセーフ）。
+
+## 安全設計
+
+- 道B（攻撃側は実弾を生成・保存しない）/ モード分離（既定で攻撃側オフ）/ ラウンド数ハード制限。
+- 外部取得テキストは「命令」でなく「データ」として扱う（Prompt Injection 対策）。
+- データソースは公的機関の公開情報に限定。実在の固有名詞は使わずカテゴリのみ。
+- シークレットはリポジトリ・イメージに置かない（Cloud Run 実行 SA の ADC で Vertex を叩く）。
+
+## ドキュメント
+
+- 設計の正本: [`docs/design-v0.1.md`](docs/design-v0.1.md)（ファイル名 v0.1 / 内容 v0.5）
+- 直近の到達点と確定結論: [`docs/HANDOFF.md`](docs/HANDOFF.md)
+- 測定の誠実さ（実物 holdout・Wilson 床バンド）: [`docs/implementation-notes-holdout-n6.md`](docs/implementation-notes-holdout-n6.md)
+- 暗記・汎化の実測: [`docs/implementation-notes-story-real.md`](docs/implementation-notes-story-real.md)
+- デプロイ記録: [`docs/implementation-notes-deploy.md`](docs/implementation-notes-deploy.md)
+- 提出用 writeup: [`submission/protopedia-writeup.md`](submission/protopedia-writeup.md)
