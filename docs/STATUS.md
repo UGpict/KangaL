@@ -15,7 +15,7 @@
 | **Phase 2A** 物語検証 | **部分実装** | `missedBy→変異`の駆動は実装(`evolve` の directed mutation)+tested。デモで承転結アークを**可視化**できる。**残り: 実エージェント/シードで実際に「山」が出るかは未検証**（デモは scripted、§5）。 |
 | **Gmail** 読み取りポーリング | **未着手** | `src` に Gmail 実装なし（`gmail` 一致は `verifySenderAuth` のコメントのみ）。 |
 | **Phase 2B** 攻防ループ自律化 | **部分実装** | 攻撃エージェント(`generateAttackPattern`+`evolve`)✅tested、`loop.ts`(生成→調査→判定→進化)✅tested(mock)、missedBy配列→単一の橋渡し✅。**機構は回る。実Gemini自律走での山(物語)は未検証**。ADK未採用（意図的に先送り、§2-2）。 |
-| **Phase 3** メトリクス+外部ホールドアウト分離 | **部分実装** | `metrics.ts`(recall/fpr/`recordRound`/閾値)✅tested。**残り①**: `loop` の `judgeSample` 既定が placeholder(`score:0`固定)＝実サンプル採点が未配線→サンプルベースの recall/FPR は今は動かない。**残り②**: 外部ホールドアウトの物理分離は**未確認**（`seedBenignSamples` スクリプトは存在するが分離設計は未読・未検証）。 |
+| **Phase 3** メトリクス+外部ホールドアウト分離 | **部分実装** | `metrics.ts`(recall/fpr/`recordRound`/閾値)✅tested。`judgeSample` は T3 で本判定パスへ配線済み（旧 placeholder 解消・HANDOFF §1）。外部ホールドアウトの物理分離は柱2 で `realScamHoldout` コレクション＋攻撃側到達不可の境界テストとして実装済み。**残り**: (c) コーパスへの実物投入と recall/FPR 実測（実物サンプル待ち）。 |
 | **Phase 5** 総点検+デモ準備 | **部分実装** | デモUI(`/demo`＋5コンポーネント)+倫理ディスクレーマ＋scripted シナリオは完成。総点検は未（＝本STATUSがその一歩）。 |
 
 ---
@@ -28,7 +28,7 @@
 | 2 | **ADK で自律化→実態は手組みループ**（`loop.ts` は `@google/genai` 直叩きの for-loop。ADK は spike のみ） | **実装が正（現状）**。`loop.ts` のコメントどおり、唯一の動的判断(ツール選択)は既に `investigate.ts` の function-calling にあり、for-loop に framework を足す利得が無い。計画を「ADK 形を保った手組み（将来 swap 可）」に更新。 |
 | 3 | **単一の正規化入口に収束→未収束**（paste/loop/demo が別経路、§4。正規化モジュール不在） | **計画が部分的に正だが今は破壊不要**。収束相手の Gmail が未着手で、paste(message-body)とloop(levers)は入力の性質が別。**Gmail 実装時に paste と共通の message 正規化を作る**のが素直。 |
 | 4 | **デモループ=実 runLoop の想定→実態は scripted `DEMO_ROUNDS`**（ハードコードで承転結を決定論再現） | **未検証項目**（実装が正でも計画が正でもない）。可視化の保険としては正しい設計だが、Phase 2A の本来目的「山が実際に出るか」は別途**実走で検証**が必要。`_loop.ts` のデータ源を実 `runLoop` 結果へ差し替える前提で組まれている。 |
-| 5 | **メトリクスのサンプル採点が placeholder**（`judgeSample` 既定 `score:0`） | **計画が正（実装を進める）**。message-body 判定パスを `judgeSample` に配線しないと外部ホールドアウト/良性サンプルでの recall・FPR が動かない。Phase 3 の核。 |
+| 5 | ~~**メトリクスのサンプル採点が placeholder**~~ → **T3 で解消済み**（`judgeSample` は `analyzeStructure→investigate→judge` の本判定パスに配線。HANDOFF §1）。 | 差分は閉じた。外部ホールドアウト/良性での recall・FPR が動く土台は完成。残るは実測（実物サンプル投入後）。 |
 
 ---
 
