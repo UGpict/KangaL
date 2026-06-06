@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed:benign": "tsx scripts/seedBenignSamples.ts"
+    "seed:benign": "tsx scripts/seedBenignSamples.ts",
+    "seed:holdout": "tsx scripts/seedRealHoldout.ts"
   },
   "dependencies": {
     "@google-cloud/firestore": "^8.6.0",

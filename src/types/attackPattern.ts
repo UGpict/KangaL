@@ -81,3 +81,20 @@ export type AttackPattern = {
 export type ScamSample = { kind: "scam"; messageBody: string };
 export type BenignSample = { kind: "benign"; messageBody: string };
 export type Sample = ScamSample | BenignSample;
+
+// 柱2: 外部実物ホールドアウトの素性。実物 scam は「どこで・いつ集めたか」を
+// 必ず携える（自作プローブと混同しない／再現と監査のため）。これは評価専用で、
+// 攻撃側 evolve には一切渡さない（不変条件A・attacker.boundary.test.ts で固定）。
+export type SampleProvenance = {
+  // 収集元（例: フィッシング対策協議会 / IPA / JPCERT/CC / 警察庁 / 自己受信）。
+  source: string;
+  // 出典 URL・整理番号など。任意（無い実物もある）。
+  reference?: string;
+  // 収集日（ISO 8601 / YYYY-MM-DD）。
+  collectedAt: string;
+  // 補足（言語・改変の有無・匿名化メモなど）。任意。
+  note?: string;
+};
+
+// 実物 scam = 詐欺本文 + provenance。judgeSample（T3 配線済み実 judge パス）で評価する。
+export type RealScamSample = ScamSample & { provenance: SampleProvenance };
