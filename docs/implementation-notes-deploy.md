@@ -125,3 +125,59 @@ gcloud projects add-iam-policy-binding ai-bridging \
 
 - PLAN-v2 T1 の DoD 2件いずれも達成。anchor `matchKnownScams` は本番で degrade しない。実ドメイン RDAP は取得可能。
 - 残る本番 degrade は `urlReputation`(Web Risk 未配線・別タスク) のみ。T2 の観測土台としては、anchor が ok で回ることを確認できた。
+
+## Phase 1 再デプロイ記録（提出物仕上げ / 2026-06-07）
+
+目的: 6/5 の骨格リビジョン（`kangal-00001-2k4`、demo/閉ループ/holdout/道A の全コミットより前）から、HEAD（`f854bda`）へ更新し、審査員が `/`（ライブ受信箱）と `/demo`（スクリプトアーク）を触れる状態にする。**本フェーズは公開しない**（認証必須のまま検証まで）。
+
+### 実行内容
+- **デプロイ元の確定**: 未コミットの観測 probe 4本＋`analyzeStructure.ts` の temperature フックを `git stash push -u` で退避し、**`f854bda` ちょうど**からビルド。完了後 `git stash pop` で復元（HANDOFF §5-A「観測は未コミットのまま」規律を維持）。temp フックは既定不変で挙動中立、`scripts/` は standalone ビルドに入らないため、生成イメージは退避有無で同一。
+- **コマンド**（T1 の手順に `DEMO_MODE=true` を追加・公開フラグは付けない）:
+  ```bash
+  gcloud run deploy kangal --source . --region us-central1 --project ai-bridging \
+    --no-allow-unauthenticated \
+    --set-env-vars "GOOGLE_CLOUD_PROJECT=ai-bridging,GOOGLE_CLOUD_LOCATION=us-central1,DEMO_MODE=true" \
+    --memory 1Gi --cpu 1 --max-instances 3 --min-instances 0
+  ```
+- **結果**: 新リビジョン `kangal-00002-82q` が 100% traffic。env に `DEMO_MODE=true` 反映を確認。
+
+### 検証（認証付き ID トークン・公開せず）
+- `GET /` → 200（ライブ受信箱）。
+- `GET /demo` → **200**（以前は `DEMO_MODE` 未設定で proxy が 403）。＝デモアークのルートが配信される。
+- トークン無し `GET /` → 403（**未公開・認証ゲート維持**）。
+- `POST /api/judge`（ライブ Gemini）→ `{degraded:false, score:29, reason:"…"(日本語生成)}`。エンドツーエンドのライブ判定が稼働。`urlReputation` は `missing_api_key`（Web Risk 未配線・想定どおり）。
+
+### DEMO_MODE=true の本番ブラスト半径（§3 の failsafe との関係・正本更新）
+§3 は「本番に `DEMO_MODE` を絶対足すな（攻撃エージェントが有効化）」と書いたが、**デプロイされる HTTP 表面**で実際に解放されるのは `/demo`（`runDemoRound` Server Action → `buildDemoRound` = スクリプト・純関数・Gemini 不到達・攻撃側不到達・Firestore 書き込みなし）のみ。`runLoop`（ライブ攻撃側）は `assertDemoMode` ゲート下にあり、かつ**どの HTTP ルートからも呼ばれない**（CLI スクリプト専用）。＝`DEMO_MODE=true` でもネットワーク表面にライブ攻撃側は出ない。提出デモのため §3 の failsafe を**意図的・限定的に反転**した（攻撃側が HTTP 表面に無いことが根拠）。
+
+### 公開フェーズ（2026-06-07・人間承認後に実行）
+
+承認順（事前テスト緑 → 予算アラート → 公開 → 公開後検証 → 記録）で実施。
+
+- **Step 0 事前確認**: `npx vitest run` = 253 passed / 6 skipped、`attacker.boundary` 4 passed を独立確認。＝「DEMO_MODE=true でもライブ攻撃側が HTTP 表面に出ない」公開根拠を裏付け。
+- **Step 1 予算アラート（ドルの蓋・通知のみ）**: 作成済み（id `5d1b881d-…`）。
+  - **重要・通貨**: 請求アカウント `01F9D0-830E91-91AE15` の通貨は **JPY**。`30USD` は `INVALID_ARGUMENT`。$30 ≈ **¥4500**（~150円/$）で作成。
+  - 閾値 50/90/100%、`--filter-projects=projects/ai-bridging`。**通知（メール）であってハードストップではない**＝超過しても課金は止まらない。止めるには公開を外す手動対応が必要。
+  - `billingbudgets.googleapis.com` は未有効だったため `gcloud services enable` で有効化してから作成。
+  - 実行コマンド:
+    ```bash
+    gcloud services enable billingbudgets.googleapis.com --project ai-bridging
+    gcloud billing budgets create --billing-account=01F9D0-830E91-91AE15 \
+      --display-name="kangal-public-demo" --budget-amount=4500JPY \
+      --filter-projects="projects/ai-bridging" \
+      --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0
+    ```
+- **Step 2 公開切替**: 実施済み。
+  - **ハマり**: この gcloud 版の `gcloud run services update` は `--allow-unauthenticated` を**受け付けない**（`unrecognized arguments`）。等価な IAM バインディングで公開:
+    ```bash
+    gcloud run services add-iam-policy-binding kangal --region us-central1 --project ai-bridging \
+      --member="allUsers" --role="roles/run.invoker"
+    ```
+  - 公開設定: `allUsers` → `roles/run.invoker`。レート制限は入れず `--max-instances 3` の頭打ち＋予算アラート＋監視で対応（決定済み）。
+- **Step 3 公開後検証（トークン無し・外部視点）**: いずれも合格。
+  - `GET /` → 200、`GET /demo` → 200、`POST /api/judge`（サンプル詐欺文）→ `{degraded:false, score:53, reason:"…"(ライブ Gemini 日本語)}`。
+- 稼働: リビジョン `kangal-00002-82q`（HEAD=`f854bda`、`DEMO_MODE=true`）が公開で配信。URL `https://kangal-649847191589.us-central1.run.app`。
+
+### 残（次フェーズ・本フェーズ対象外）
+- Web Risk 配線は保留（§5 の Secret Manager 手順のまま）。`urlReputation` は公開後も `missing_api_key` で degrade（想定どおり）。
+- 公開を閉じる場合（デモ期間後など）: `gcloud run services remove-iam-policy-binding kangal --region us-central1 --project ai-bridging --member="allUsers" --role="roles/run.invoker"`。
