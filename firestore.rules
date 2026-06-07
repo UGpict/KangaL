@@ -1,0 +1,14 @@
+// KangaL Firestore rules — locked mode.
+// 全コレクションへのクライアント直アクセスは全拒否（allow read, write: if false）。
+// アプリの読み書きはサーバ SDK (@google-cloud/firestore) 経由のみで、これは
+// セキュリティルールではなく IAM (Cloud Run ランタイム SA) で認可されルールをバイパスする。
+// すなわち本ルールは「クライアント SDK / Firebase ブラウザ API からの直アクセスを塞ぐ」ためのもの。
+// 本番コンソールで確認済みの現行ルールをリポジトリに固定（IaC 管理）。
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
