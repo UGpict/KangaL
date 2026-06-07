@@ -3,6 +3,21 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /* ── リスク状態色（単一の真実源）─────────────────────────────────────
+     役割を変数名に宿す。状態色とブランド色（--brand-*）は別系統で、絶対に混ぜない。
+     値は InboxApp の Tailwind パレット（red-/emerald-/slate-600 系）と同色相。
+     camera 圧縮耐性のための多階調指定は当面 InboxApp 側の Tailwind クラスが担い、
+     完全な var 配線は navy+cyan 適用（チャンク3）でまとめて行う。 */
+  --risk-danger: #dc2626; /* red-600    : 詐欺の可能性が高い。フリクション集中の唯一色 */
+  --risk-safe: #059669; /* emerald-600: 問題なし。過信を生まないトーンに抑える */
+  --risk-degraded: #475569; /* slate-600  : 判定不能。緑と彩度で明確に区別（安全と誤読させない） */
+  /* 現状未使用。状態色は3値（赤/緑/灰）で確定。将来 FPR 実測後に確信度バンドとして復活予定。 */
+  --risk-caution: #d97706; /* amber-600  : 未使用（上記コメント参照） */
+
+  /* ── ブランド色（状態色とは別系統。適用はチャンク3）───────────────── */
+  --brand-navy: #0f2a43; /* 濃紺：支配色。相棒アイコンの世界観 */
+  --brand-accent: #22d3ee; /* cyan：鋭いアクセント */
 }
 
 @theme inline {
@@ -12,7 +27,9 @@
   --font-mono: var(--font-geist-mono);
 
   /* 役割ベースの色トークン（攻防メトリクス可視化・Task 8-C1）。
-     既存 InboxApp の Tailwind パレットと色相を合わせ、UI 乖離を防ぐ。 */
+     既存 InboxApp の Tailwind パレットと色相を合わせ、UI 乖離を防ぐ。
+     注: ここの --color-brand は「メトリクスの recall 折れ線」を指す既存の命名で、
+     KangaL のブランド色（上の --brand-navy / --brand-accent）とは別物。混同しない。 */
   --color-brand: #2563eb; /* blue-600    : recall 折れ線 */
   --color-warning: #d97706; /* amber-600   : FPR 折れ線 */
   --color-action: #059669; /* emerald-600 : coverage 折れ線 */

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { JudgeResponseBody } from "@/app/api/judge/route";
 import { SAMPLE_MESSAGES, type InboxMessage } from "@/lib/sampleMessages";
 import { summarizeBonus } from "@/lib/weights";
+import type { UserDecision } from "@/types/feedback";
 import type {
   BonusSource,
   InvestigationBonus,
@@ -16,19 +17,41 @@ type LoadState =
   | { kind: "ok"; data: JudgeResponseBody }
   | { kind: "error"; message: string };
 
-type RiskColor = "red" | "amber" | "emerald" | "slate";
+type RiskColor = "red" | "emerald" | "slate";
 
-// Color thresholds: 70 / 30 split. amber is reserved for the medium band and
-// is NOT reused anywhere else in the UI (1色1意味 / state-color contract).
-function riskBandFromScore(score: number): { label: string; color: RiskColor } {
+// 状態色は3値で確定（赤=danger / 緑=safe / 灰=degraded）。中間帯 amber は外した:
+// fixture が 30〜69 を発火させず、一律でない警告は alert fatigue の素。70 以上を
+// danger、未満を safe とする。将来 FPR 実測後に確信度バンドを復活させる余地は
+// globals.css の --risk-caution（未使用）に残してある。
+function riskBandFromScore(
+  score: number,
+): { label: string; color: "red" | "emerald" } {
   if (score >= 70) return { label: "高", color: "red" };
-  if (score >= 30) return { label: "中", color: "amber" };
   return { label: "低", color: "emerald" };
+}
+
+// 結論（1行）は赤/緑で別文。緑は「安全です」と言い切らず過信を生まないトーンに
+// 留める（doc: 強すぎる緑にしない）。断定 ⟷ 不確実性に誠実、の緊張をコピーで体現。
+const CONCLUSION: Record<"red" | "emerald", string> = {
+  red: "これは詐欺の可能性が高いです",
+  emerald: "目立った問題は見つかりませんでした",
+};
+
+// 受信箱リストの「開く前/再訪時に分かる印」。視覚的フリクションは危険側に集中させ、
+// 安全（緑）は静かに＝印を出さない（doc）。色は globals.css の状態色トークンを参照し、
+// 単一の真実源とする。判定前（cache 未保持）は印なし＝まだ判定していないという正直さ。
+function listMarker(
+  judged: JudgeResponseBody | undefined,
+): { color: string; label: string } | null {
+  if (!judged) return null;
+  if (judged.degraded)
+    return { color: "var(--risk-degraded)", label: "判定保留" };
+  if (judged.score >= 70) return { color: "var(--risk-danger)", label: "要注意" };
+  return null;
 }
 
 const BADGE_STYLES: Record<RiskColor, string> = {
   red: "bg-red-100 text-red-900 border-red-400 ring-red-300",
-  amber: "bg-amber-100 text-amber-900 border-amber-400 ring-amber-300",
   emerald: "bg-emerald-100 text-emerald-900 border-emerald-400 ring-emerald-300",
   // slate kept clearly distinct from emerald to survive camera compression
   slate: "bg-slate-200 text-slate-800 border-slate-500 ring-slate-400",
@@ -58,8 +81,43 @@ function RiskBadge({
 export default function InboxApp() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [cache, setCache] = useState<Record<string, JudgeResponseBody>>({});
+  const [decisions, setDecisions] = useState<Record<string, UserDecision>>({});
   const [state, setState] = useState<LoadState>({ kind: "idle" });
   const verdictRef = useRef<HTMLDivElement | null>(null);
+
+  // 永続済みの逃げ道（userVerdicts）を起動時に復元。認証なし環境では空で返るので
+  // UI は劣化しない。
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/feedback")
+      .then((r) => (r.ok ? r.json() : { verdicts: {} }))
+      .then((d: { verdicts?: Record<string, UserDecision> }) => {
+        if (!cancelled && d?.verdicts) setDecisions(d.verdicts);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 逃げ道の上書き: 楽観的にローカル反映してから永続化。decision === null は取り消し。
+  async function decide(messageId: string, decision: UserDecision | null) {
+    setDecisions((prev) => {
+      const next = { ...prev };
+      if (decision === null) delete next[messageId];
+      else next[messageId] = decision;
+      return next;
+    });
+    try {
+      await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: messageId, decision }),
+      });
+    } catch {
+      // 楽観的 UI は保持。次の操作で永続を再試行する。
+    }
+  }
 
   const selected: InboxMessage | undefined = SAMPLE_MESSAGES.find(
     (m) => m.id === selectedId,
@@ -111,9 +169,16 @@ export default function InboxApp() {
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
-      <header className="border-b border-zinc-200 bg-white px-6 py-3 dark:border-zinc-800 dark:bg-zinc-900">
-        <h1 className="text-xl font-bold tracking-tight">KangaL</h1>
-        <p className="text-xs text-zinc-500">進化して、詐欺に食らいつく。</p>
+      {/* ブランド色 navy+cyan はヘッダーにのみ適用。状態色（赤/緑/灰）とは混ぜない。 */}
+      <header
+        style={{ backgroundColor: "var(--brand-navy)" }}
+        className="border-b border-black/20 px-6 py-3"
+      >
+        <h1 className="text-xl font-bold tracking-tight text-white">
+          Kanga
+          <span style={{ color: "var(--brand-accent)" }}>L</span>
+        </h1>
+        <p className="text-xs text-white/60">進化して、詐欺に食らいつく。</p>
       </header>
 
       <main className="grid h-[calc(100vh-64px)] grid-cols-1 lg:grid-cols-[340px_1fr]">
@@ -124,25 +189,45 @@ export default function InboxApp() {
           <ul>
             {SAMPLE_MESSAGES.map((m) => {
               const isSelected = m.id === selectedId;
+              const marker = listMarker(cache[m.id]);
+              const decision = decisions[m.id];
               return (
                 <li key={m.id}>
                   <button
                     type="button"
                     onClick={() => selectMessage(m)}
-                    className={`w-full border-b border-zinc-100 px-4 py-3 text-left transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800 ${
+                    className={`flex w-full gap-3 border-b border-zinc-100 px-4 py-3 text-left transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800 ${
                       isSelected
                         ? "bg-zinc-100 dark:bg-zinc-800"
                         : "bg-transparent"
                     }`}
                   >
-                    <div className="truncate text-xs text-zinc-500">
-                      {m.from}
-                    </div>
-                    <div className="mt-0.5 truncate text-sm font-medium">
-                      {m.subject}
-                    </div>
-                    <div className="mt-0.5 line-clamp-1 text-xs text-zinc-500">
-                      {m.body.replace(/\s+/g, " ").slice(0, 60)}
+                    {/* 危険側にだけ点を出す。安全/未判定は透明＝静か。整列は常に保つ。 */}
+                    <span
+                      aria-label={marker?.label}
+                      title={marker?.label}
+                      className="mt-1.5 h-2 w-2 shrink-0 rounded-full"
+                      style={
+                        marker ? { backgroundColor: marker.color } : undefined
+                      }
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs text-zinc-500">
+                        {m.from}
+                      </div>
+                      <div className="mt-0.5 truncate text-sm font-medium">
+                        {m.subject}
+                      </div>
+                      <div className="mt-0.5 line-clamp-1 text-xs text-zinc-500">
+                        {m.body.replace(/\s+/g, " ").slice(0, 60)}
+                      </div>
+                      {decision && (
+                        <div className="mt-1 text-[10px] font-medium text-zinc-400">
+                          {decision === "reported"
+                            ? "報告済み"
+                            : "安全と判断"}
+                        </div>
+                      )}
                     </div>
                   </button>
                 </li>
@@ -202,6 +287,10 @@ export default function InboxApp() {
                   <VerdictCard
                     key={selectedId ?? ""}
                     result={state.data}
+                    decision={
+                      selectedId ? decisions[selectedId] ?? null : null
+                    }
+                    onDecide={(d) => selectedId && decide(selectedId, d)}
                   />
                 )}
               </div>
@@ -213,52 +302,169 @@ export default function InboxApp() {
   );
 }
 
-function VerdictCard({ result }: { result: JudgeResponseBody }) {
-  if (result.degraded) {
+// 「次の一手」= AI 判定への逃げ道（doc: AI判定に上書きを必ず残す）。視覚的
+// フリクションは危険側に集中させる: 赤では「報告する」を主（solid）、「安全だと
+// 判断する」を従（控えめなテキストリンク）。緑は静かに、灰は正直に単一の報告のみ。
+// 状態は親（InboxApp）が持ち、onDecide で楽観的反映＋ /api/feedback へ永続。
+function NextSteps({
+  color,
+  decision,
+  onDecide,
+}: {
+  color: RiskColor;
+  decision: UserDecision | null;
+  onDecide: (decision: UserDecision | null) => void;
+}) {
+  if (decision) {
     return (
-      <div className="verdict-pop rounded-lg border-2 border-slate-400 bg-slate-50 p-5 shadow-md dark:bg-slate-900/40">
-        <div className="flex items-baseline gap-3">
-          <RiskBadge label="判定保留" color="slate" />
-        </div>
-        <p className="mt-4 text-sm leading-7 text-slate-800 dark:text-slate-200">
-          メッセージの構造を分析できませんでした。文面をご確認の上、十分に注意してください。
-        </p>
+      <div className="mt-5 flex items-center gap-3 border-t border-zinc-200 pt-4 text-sm dark:border-zinc-700">
+        <span className="font-medium text-zinc-700 dark:text-zinc-300">
+          ✓ {decision === "reported" ? "報告しました" : "安全だと判断しました"}
+        </span>
+        <button
+          type="button"
+          onClick={() => onDecide(null)}
+          className="text-xs text-zinc-500 underline underline-offset-2 hover:text-zinc-700 dark:hover:text-zinc-300"
+        >
+          取り消す
+        </button>
       </div>
     );
   }
+
+  return (
+    <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-zinc-200 pt-4 dark:border-zinc-700">
+      {color === "red" && (
+        <>
+          <button
+            type="button"
+            onClick={() => onDecide("reported")}
+            className="rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-red-700"
+          >
+            報告する
+          </button>
+          <button
+            type="button"
+            onClick={() => onDecide("marked_safe")}
+            className="text-sm text-zinc-500 underline underline-offset-2 hover:text-zinc-700 dark:hover:text-zinc-300"
+          >
+            安全だと判断する
+          </button>
+        </>
+      )}
+      {color === "emerald" && (
+        <button
+          type="button"
+          onClick={() => onDecide("reported")}
+          className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+        >
+          詐欺かもしれないと報告する
+        </button>
+      )}
+      {color === "slate" && (
+        <button
+          type="button"
+          onClick={() => onDecide("reported")}
+          className="rounded-md border border-slate-400 px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+        >
+          報告する
+        </button>
+      )}
+    </div>
+  );
+}
+
+function VerdictCard({
+  result,
+  decision,
+  onDecide,
+}: {
+  result: JudgeResponseBody;
+  decision: UserDecision | null;
+  onDecide: (decision: UserDecision | null) => void;
+}) {
+  if (result.degraded) {
+    return (
+      <div className="verdict-pop rounded-lg border-2 border-slate-400 bg-slate-50 p-5 shadow-md dark:bg-slate-900/40">
+        <div className="mb-3 flex items-start justify-between gap-4">
+          <h3 className="text-lg font-bold leading-snug text-slate-800 dark:text-slate-200">
+            判定できませんでした
+          </h3>
+          <div className="shrink-0 text-right">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              状態
+            </div>
+            <RiskBadge label="判定保留" color="slate" />
+          </div>
+        </div>
+        <p className="text-sm leading-7 text-slate-800 dark:text-slate-200">
+          メッセージの構造を分析できませんでした。これは「安全」という意味ではありません。文面をご確認の上、十分に注意してください。
+        </p>
+        <NextSteps color="slate" decision={decision} onDecide={onDecide} />
+      </div>
+    );
+  }
+
   const { label, color } = riskBandFromScore(result.score);
   const cardBorder: Record<RiskColor, string> = {
     red: "border-red-300 bg-red-50/60 dark:bg-red-950/30",
-    amber: "border-amber-300 bg-amber-50/60 dark:bg-amber-950/30",
     emerald: "border-emerald-300 bg-emerald-50/60 dark:bg-emerald-950/30",
     slate: "border-slate-300 bg-slate-50 dark:bg-slate-900/40",
   };
+  const headlineClass =
+    color === "red"
+      ? "text-red-900 dark:text-red-200"
+      : "text-emerald-900 dark:text-emerald-200";
+
   return (
     <div
       className={`verdict-pop rounded-lg border-2 p-5 shadow-md ${cardBorder[color]}`}
     >
-      <div className="flex items-baseline gap-3">
-        <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-          危険度
-        </span>
-        <RiskBadge label={label} score={result.score} color={color} />
-        <span className="text-xs text-zinc-500">/100</span>
+      {/* 結論（1行・断定）＋ 確信度（score）。doc: 行動可能な洞察を生データより先に。 */}
+      <div className="mb-3 flex items-start justify-between gap-4">
+        <h3 className={`text-lg font-bold leading-snug ${headlineClass}`}>
+          {CONCLUSION[color]}
+        </h3>
+        <div className="shrink-0 text-right">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            確信度
+          </div>
+          <RiskBadge label={label} score={result.score} color={color} />
+        </div>
       </div>
-      <p className="mt-5 whitespace-pre-wrap text-sm leading-7 text-zinc-800 dark:text-zinc-200">
+
+      {/* 理由（短く・人間語）。技術的な詳細は根拠（折りたたみ）へ。 */}
+      <p className="whitespace-pre-wrap text-sm leading-7 text-zinc-800 dark:text-zinc-200">
         {result.reason}
       </p>
+      {color === "emerald" && (
+        <p className="mt-2 text-xs leading-6 text-zinc-500">
+          「絶対に安全」という意味ではありません。心当たりのない送金・連絡の依頼には引き続きご注意ください。
+        </p>
+      )}
+
+      {/* isolationNote は技術詳細ではなく孤立化への人間語の警告。危険側に残して可視に。 */}
       {result.isolationNote && (
-        <div className="mt-5 rounded border-l-4 border-l-red-500 border border-red-200 bg-red-50 px-4 py-3 text-sm leading-7 text-red-900 dark:border-red-900 dark:bg-red-950/40 dark:text-red-100">
+        <div className="mt-4 rounded border border-red-200 border-l-4 border-l-red-500 bg-red-50 px-4 py-3 text-sm leading-7 text-red-900 dark:border-red-900 dark:bg-red-950/40 dark:text-red-100">
           <div className="mb-1 text-xs font-semibold uppercase tracking-wider">
             注記
           </div>
           <p className="whitespace-pre-wrap">{result.isolationNote}</p>
         </div>
       )}
-      <InvestigationSection
-        investigation={result.investigation}
-        bonus={result.investigationBonus}
-      />
+
+      {/* 根拠（段階的開示）— 技術的な調査結果・配点は折りたたみの中へ。 */}
+      <details className="mt-4">
+        <summary className="cursor-pointer select-none text-xs font-semibold uppercase tracking-wider text-zinc-500 transition-colors hover:text-zinc-700 dark:hover:text-zinc-300">
+          根拠を見る
+        </summary>
+        <InvestigationSection
+          investigation={result.investigation}
+          bonus={result.investigationBonus}
+        />
+      </details>
+
+      <NextSteps color={color} decision={decision} onDecide={onDecide} />
     </div>
   );
 }
