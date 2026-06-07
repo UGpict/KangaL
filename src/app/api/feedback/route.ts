@@ -4,6 +4,7 @@ import {
   listUserVerdicts,
   recordUserVerdict,
 } from "@/lib/feedbackWriter";
+import { readBoundedJson } from "@/lib/readBoundedJson";
 import type { UserDecision } from "@/types/feedback";
 
 // 公開（allUsers）ルート前提。任意キーでのコレクション汚染・任意文面の保存を塞ぐため、
@@ -27,12 +28,12 @@ export async function GET(): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  let payload: unknown;
-  try {
-    payload = await request.json();
-  } catch {
-    return Response.json({ error: "invalid_json" }, { status: 400 });
+  const parsed = await readBoundedJson(request);
+  if (!parsed.ok) {
+    const status = parsed.error === "payload_too_large" ? 413 : 400;
+    return Response.json({ error: parsed.error }, { status });
   }
+  const payload = parsed.value;
 
   const id =
     typeof payload === "object" &&

@@ -108,4 +108,29 @@ describe("/api/judge route", () => {
     expect(response.status).toBe(400);
     expect(analyzeStructure).not.toHaveBeenCalled();
   });
+
+  it("(G1) rejects an over-length authenticationResults before judging (closes the 8000 bypass)", async () => {
+    const response = await POST(
+      makeRequest({ message: "hi", authenticationResults: "a".repeat(4001) }),
+    );
+    const body = await response.json();
+    expect(response.status).toBe(400);
+    expect(body.error).toBe("authentication_results_too_long");
+    expect(analyzeStructure).not.toHaveBeenCalled();
+  });
+
+  it("(M1) returns 413 and never parses when the body exceeds the byte cap", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/judge", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        // > 64KB of JSON — read is cut off before reaching the agents.
+        body: JSON.stringify({ message: "x".repeat(70 * 1024) }),
+      }),
+    );
+    const body = await response.json();
+    expect(response.status).toBe(413);
+    expect(body.error).toBe("payload_too_large");
+    expect(analyzeStructure).not.toHaveBeenCalled();
+  });
 });

@@ -80,6 +80,19 @@ describe("/api/feedback POST", () => {
     expect(recordUserVerdict).not.toHaveBeenCalled();
   });
 
+  it("(M1) returns 413 and never writes when the body exceeds the byte cap", async () => {
+    const res = await POST(
+      new Request("http://localhost/api/feedback", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: KNOWN_ID, pad: "x".repeat(70 * 1024) }),
+      }),
+    );
+    expect(res.status).toBe(413);
+    expect((await res.json()).error).toBe("payload_too_large");
+    expect(recordUserVerdict).not.toHaveBeenCalled();
+  });
+
   it("returns 500 when the writer throws", async () => {
     vi.mocked(recordUserVerdict).mockRejectedValue(new Error("no creds"));
     const res = await POST(makeRequest({ id: KNOWN_ID, decision: "marked_safe" }));
