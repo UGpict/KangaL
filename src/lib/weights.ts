@@ -92,6 +92,14 @@ export const BONUS_OFFICIAL_ALERT = 8;
 // engineering choice. Raising this cap restores additive behavior.
 export const INVESTIGATION_BONUS_CAP = 25;
 
+// Single source of truth for the danger/safe band boundary. score >= this is
+// the red (danger) band; below is the green (safe) band. Used by the UI to
+// pick the conclusion/marker AND by judge.ts to set the reason-generation tone
+// so the explanation never contradicts the band. The value itself is NOT a
+// calibrated threshold — FPR isn't measured on real corpora yet (see writeup
+// limitations); revisit once real benign rates are known.
+export const DANGER_SCORE_THRESHOLD = 70;
+
 export function computeInvestigationBonus(
   report: InvestigationReport | null | undefined,
 ): InvestigationBonus {

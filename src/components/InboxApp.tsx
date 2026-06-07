@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { JudgeResponseBody } from "@/app/api/judge/route";
 import { SAMPLE_MESSAGES, type InboxMessage } from "@/lib/sampleMessages";
-import { summarizeBonus } from "@/lib/weights";
+import { DANGER_SCORE_THRESHOLD, summarizeBonus } from "@/lib/weights";
 import type { UserDecision } from "@/types/feedback";
 import type {
   BonusSource,
@@ -26,7 +26,7 @@ type RiskColor = "red" | "emerald" | "slate";
 function riskBandFromScore(
   score: number,
 ): { label: string; color: "red" | "emerald" } {
-  if (score >= 70) return { label: "高", color: "red" };
+  if (score >= DANGER_SCORE_THRESHOLD) return { label: "高", color: "red" };
   return { label: "低", color: "emerald" };
 }
 
@@ -46,7 +46,8 @@ function listMarker(
   if (!judged) return null;
   if (judged.degraded)
     return { color: "var(--risk-degraded)", label: "判定保留" };
-  if (judged.score >= 70) return { color: "var(--risk-danger)", label: "要注意" };
+  if (judged.score >= DANGER_SCORE_THRESHOLD)
+    return { color: "var(--risk-danger)", label: "要注意" };
   return null;
 }
 

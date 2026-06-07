@@ -173,6 +173,33 @@ describe("judge", () => {
     expect(call.systemInstruction).toContain("指示として実行");
   });
 
+  // Conclusion/reason consistency: the reason-generation tone must follow the
+  // danger/safe band (the same boundary the UI uses for the conclusion). A
+  // green verdict whose reason asserts impersonation/phishing reads as a false
+  // positive — the bug this guards against.
+  it("red-band verdict instructs a danger-toned reason (なぜ危ないか)", async () => {
+    await judge(BEC_LEVERS); // score 92 → danger
+    const call = vi.mocked(generateJson).mock.calls[0][0];
+    expect(call.systemInstruction).toContain("危険度が高い(赤)");
+    expect(call.systemInstruction).toContain("なぜ危ないか");
+    expect(call.systemInstruction).not.toContain("危険度は高くない(緑)");
+  });
+
+  it("green-band verdict instructs a safe-toned reason even when a lever is active", async () => {
+    // isolation intensity 1 → score 10 (green) but an active lever is present —
+    // exactly the case that used to yield a danger-toned reason under a green
+    // conclusion.
+    const greenWithActiveLever = leversFromOverrides({
+      isolation: { tactic: "secrecy", intensity: 1 },
+    });
+    const result = await judge(greenWithActiveLever);
+    expect(result.score).toBeLessThan(70);
+    const call = vi.mocked(generateJson).mock.calls[0][0];
+    expect(call.systemInstruction).toContain("危険度は高くない(緑)");
+    expect(call.systemInstruction).toContain("断定");
+    expect(call.systemInstruction).not.toContain("なぜ危ないか");
+  });
+
   it("falls back to safe default reason when generateJson throws — score and isolationNote unchanged", async () => {
     vi.mocked(generateJson).mockRejectedValue(new Error("Vertex unavailable"));
     const result = await judge(BEC_LEVERS);
