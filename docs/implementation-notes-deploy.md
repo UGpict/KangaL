@@ -181,3 +181,26 @@ gcloud projects add-iam-policy-binding ai-bridging \
 ### 残（次フェーズ・本フェーズ対象外）
 - Web Risk 配線は保留（§5 の Secret Manager 手順のまま）。`urlReputation` は公開後も `missing_api_key` で degrade（想定どおり）。
 - 公開を閉じる場合（デモ期間後など）: `gcloud run services remove-iam-policy-binding kangal --region us-central1 --project ai-bridging --member="allUsers" --role="roles/run.invoker"`。
+
+## H4 実行記録 — 専用ランタイム SA への差し替え（最小権限 / 2026-06-08）
+
+目的: 実行 SA を既定 compute SA（`649847191589-compute@developer.gserviceaccount.com`）から、**ロールを2つに限定した専用 SA** へ差し替え、最小権限を「主張」でなく「事実」にする。
+
+- **差し替え結果（ライブ確認・`describe` 一致）**:
+  - 実行 SA = `kangal-runtime@ai-bridging.iam.gserviceaccount.com`
+  - 付与ロール = **`roles/aiplatform.user` + `roles/datastore.user` の2つのみ**（Vertex 呼び出し＋Firestore 読み書きに必要な最小）。
+  - revision = `kangal-00005-jqn`。
+- **コード不変（SA 差し替えのみ）**: アプリコードは変更せず SA だけ差し替え。**イメージ digest 一致**を確認（＝ビルド成果物は不変で、認可主体のみ交換）。
+- **検証**: 差し替え後の本番で調査パイプラインが degrade しないことを確認（特に `matchKnownScams`→Firestore が `PERMISSION_DENIED` を出さない＝新 SA の `datastore.user` が効いている）。全通過。
+- **ロールバック先**: 旧・既定 compute SA は削除せず温存（必要時の戻し先）。
+- **T1 との関係**: T1 で `datastore.user` を付けた対象は当時の既定 compute SA。H4 以降は**新 SA `kangal-runtime` 側に `datastore.user` が付与**され、`kangal-00005-jqn` で稼働中。
+
+## 出血止め — 常時公開をやめ認証必須へ戻した（2026-06-08）
+
+- 公開フェーズ（上記 Step 2）で付けた `allUsers`→`roles/run.invoker` を**撤去**し、本番を**認証必須へ戻した**。
+  ```bash
+  gcloud run services remove-iam-policy-binding kangal --region us-central1 --project ai-bridging \
+    --member="allUsers" --role="roles/run.invoker"
+  ```
+- **確認**: IAM ポリシー**バインディング0件** / `no-token GET=403`（公開外れ）/ `with-token=200`（正規アクセス維持）。撤去直後は伝播遅延で no-token=200 が約1〜2分残ったが、伝播後 403。
+- **運用方針**: 予算はアラート（通知）でハードストップではないため、**常時公開はしない**。デモ／審査窓のときだけ `add-iam-policy-binding allUsers → run.invoker` で開け、終わったら上記 `remove` で閉じる。一次審査はデモ動画＋ProtoPedia が主役でライブ URL 常時公開は必須要件でない（`docs/PLAN-v2.md` §5.0.1）。
