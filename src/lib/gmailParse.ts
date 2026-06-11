@@ -57,9 +57,75 @@ function headerValues(
     .map((h) => h.value ?? "");
 }
 
-function decodeBase64Url(data: string): string {
+// WHATWG TextDecoder accepts these labels directly (and many aliases). Unknown
+// labels throw at construction time, which we catch and fall back to utf-8.
+function normalizeCharset(charset: string): string {
+  return charset.trim().toLowerCase();
+}
+
+function decodeBase64Url(data: string, charset = "utf-8"): string {
   // Gmail uses base64url (-_). Node's "base64url" handles missing padding.
-  return Buffer.from(data, "base64url").toString("utf8");
+  const bytes = Buffer.from(data, "base64url");
+  try {
+    return new TextDecoder(normalizeCharset(charset)).decode(bytes);
+  } catch {
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+}
+
+// Reads the charset= parameter from a part's own Content-Type header. Real
+// Gmail format=full parts carry e.g. `text/plain; charset="ISO-2022-JP"`.
+// Absent → utf-8 (the overwhelming default and a safe fallback).
+function partCharset(part: GmailMessagePart): string {
+  const ct = headerValue(part.headers, "Content-Type");
+  const m = /charset\s*=\s*"?([^";\s]+)"?/i.exec(ct);
+  return m ? m[1] : "utf-8";
+}
+
+// Fold over-length URLs to scheme://host/... so tracking links (1KB+ of
+// upn=/utm_/click params) don't consume the truncation budget. The judge's
+// investigation tools receive URLs/domains the LLM extracts from the text —
+// they consume the host (checkDomainAge) or a host-bearing URL
+// (checkUrlReputation), never the path/query — so folding loses nothing the
+// detection reads. ASCII "..." (not "…") to keep the folded form a clean URL.
+// Raw URLs are never logged or persisted: this is a pure string transform.
+const URL_FOLD_THRESHOLD = 60;
+
+function compressUrls(text: string): string {
+  return text.replace(/https?:\/\/[^\s]+/g, (url) => {
+    if (url.length <= URL_FOLD_THRESHOLD) return url;
+    const host = /^(https?:\/\/[^/\s]+)/.exec(url);
+    return host ? `${host[1]}/...` : url;
+  });
+}
+
+// Idempotent RFC2047 decode for header values (Subject/From). Only the
+// =?charset?B|Q?text?= pattern is touched, so a header Gmail already returned
+// decoded passes through unchanged. Known negligible edge: a legitimate header
+// whose literal text is itself shaped like =?...?= would be mis-decoded — not
+// handled (vanishingly rare in real mail).
+function decodeEncodedWords(input: string): string {
+  return input.replace(
+    /=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g,
+    (whole, charset, enc, text) => {
+      try {
+        let bytes: Buffer;
+        if (enc.toUpperCase() === "B") {
+          bytes = Buffer.from(text, "base64");
+        } else {
+          const q = (text as string)
+            .replace(/_/g, " ")
+            .replace(/=([0-9A-Fa-f]{2})/g, (_m, h) =>
+              String.fromCharCode(parseInt(h, 16)),
+            );
+          bytes = Buffer.from(q, "latin1");
+        }
+        return new TextDecoder(normalizeCharset(charset)).decode(bytes);
+      } catch {
+        return whole;
+      }
+    },
+  );
 }
 
 // True for attachment parts we must never inline (we don't fetch attachmentId).
@@ -70,18 +136,19 @@ function isAttachment(part: GmailMessagePart): boolean {
 }
 
 // Depth-first search for the first non-attachment leaf of the given MIME type
-// that actually carries inline data.
+// that actually carries inline data. Returns the part (not just its data) so
+// the caller can read its per-part charset.
 function findFirstPart(
   part: GmailMessagePart | undefined,
   mimeType: string,
-): string | null {
+): GmailMessagePart | null {
   if (!part) return null;
   if (
     part.mimeType === mimeType &&
     !isAttachment(part) &&
     typeof part.body?.data === "string"
   ) {
-    return part.body.data;
+    return part;
   }
   if (part.parts) {
     for (const child of part.parts) {
@@ -90,6 +157,10 @@ function findFirstPart(
     }
   }
   return null;
+}
+
+function decodePart(part: GmailMessagePart): string {
+  return decodeBase64Url(part.body?.data ?? "", partCharset(part));
 }
 
 const ENTITIES: Array<[RegExp, string]> = [
@@ -119,16 +190,16 @@ export function htmlToText(html: string): string {
 
 function extractBody(payload: GmailMessagePart | undefined): string {
   const plain = findFirstPart(payload, "text/plain");
-  if (plain !== null) return decodeBase64Url(plain);
+  if (plain !== null) return compressUrls(decodePart(plain));
   const html = findFirstPart(payload, "text/html");
-  if (html !== null) return htmlToText(decodeBase64Url(html));
+  if (html !== null) return compressUrls(htmlToText(decodePart(html)));
   return "";
 }
 
 export function parseMessage(message: GmailMessageFull): ParsedMessage {
   const headers = message.payload?.headers;
-  const from = headerValue(headers, "From");
-  const subject = headerValue(headers, "Subject");
+  const from = decodeEncodedWords(headerValue(headers, "From"));
+  const subject = decodeEncodedWords(headerValue(headers, "Subject"));
 
   const authJoined = headerValues(headers, "Authentication-Results").join("\n");
   const rawBody = extractBody(message.payload);

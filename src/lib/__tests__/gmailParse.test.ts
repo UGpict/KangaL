@@ -9,6 +9,8 @@ import {
 import { MAX_AUTH_LENGTH, MAX_MESSAGE_LENGTH } from "@/lib/inputLimits";
 
 const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64url");
+const bytesB64 = (bytes: number[]) =>
+  Buffer.from(bytes).toString("base64url");
 
 function leaf(
   mimeType: string,
@@ -16,6 +18,22 @@ function leaf(
   extra: Partial<GmailMessagePart> = {},
 ): GmailMessagePart {
   return { mimeType, body: { data: b64(text) }, ...extra };
+}
+
+// A leaf whose body bytes are pre-encoded in a non-UTF-8 charset, declared via
+// a part-level Content-Type header (mirrors what Gmail format=full returns).
+function rawLeaf(
+  mimeType: string,
+  bytes: number[],
+  charset: string,
+): GmailMessagePart {
+  return {
+    mimeType,
+    headers: [
+      { name: "Content-Type", value: `${mimeType}; charset="${charset}"` },
+    ],
+    body: { data: bytesB64(bytes) },
+  };
 }
 
 function msg(payload: GmailMessagePart, headers = payload.headers): GmailMessageFull {
@@ -170,5 +188,123 @@ describe("summarizeMessage", () => {
       date: "Tue, 10 Jun 2026 09:00:00 +0900",
       snippet: "snip",
     });
+  });
+});
+
+describe("parseMessage — URL compression", () => {
+  it("folds an over-length tracking URL to scheme://host/... keeping body untruncated", () => {
+    // A real-world tracking URL: short visible text, enormous query string that
+    // would otherwise eat the whole truncation budget.
+    const longUrl =
+      "https://links.n.myprotein.com/ls/click?upn=" + "u001.lhZx".repeat(60);
+    expect(longUrl.length).toBeGreaterThan(100); // well over the fold threshold
+    const text = `Hi! See ${longUrl} thanks`;
+    const p = parseMessage(msg({ ...leaf("text/plain", text), headers: HEADERS }));
+    expect(p.body).toContain("https://links.n.myprotein.com/...");
+    expect(p.body).not.toContain("upn=");
+    expect(p.body).toContain("Hi! See");
+    expect(p.body).toContain("thanks");
+    expect(p.truncated).toBe(false);
+  });
+
+  it("returns budget so a long-URL message that was over MAX is no longer truncated", () => {
+    // Body is dominated by one giant URL; folding it drops length under MAX.
+    const giant = "https://t.example.com/x?q=" + "a".repeat(MAX_MESSAGE_LENGTH);
+    const p = parseMessage(msg({ ...leaf("text/plain", giant), headers: HEADERS }));
+    expect(p.truncated).toBe(false);
+    expect(p.body).toBe("https://t.example.com/...");
+  });
+
+  it("leaves a short URL (<= threshold) unfolded", () => {
+    const shortUrl = "https://ex.com/p?a=1";
+    const p = parseMessage(
+      msg({ ...leaf("text/plain", `see ${shortUrl} ok`), headers: HEADERS }),
+    );
+    expect(p.body).toContain(shortUrl);
+    expect(p.body).not.toContain("/...");
+  });
+
+  it("uses ASCII dots, never a non-ASCII ellipsis", () => {
+    const longUrl = "https://host.example.com/a?" + "k=v&".repeat(40);
+    const p = parseMessage(
+      msg({ ...leaf("text/plain", `x ${longUrl} y`), headers: HEADERS }),
+    );
+    expect(p.body).not.toContain("…");
+    expect(p.body).toContain("https://host.example.com/...");
+  });
+});
+
+describe("parseMessage — charset decoding", () => {
+  // "あ" (U+3042) in each legacy Japanese encoding.
+  const SJIS_A = [0x82, 0xa0];
+  const EUCJP_A = [0xa4, 0xa2];
+  const ISO2022JP_A = [0x1b, 0x24, 0x42, 0x24, 0x22, 0x1b, 0x28, 0x42];
+
+  it("decodes Shift_JIS via the part Content-Type charset", () => {
+    const part = rawLeaf("text/plain", SJIS_A, "Shift_JIS");
+    const headers = [...HEADERS, ...(part.headers ?? [])];
+    const p = parseMessage(msg({ ...part, headers }));
+    expect(p.body).toBe("あ");
+  });
+
+  it("decodes EUC-JP", () => {
+    const part = rawLeaf("text/plain", EUCJP_A, "EUC-JP");
+    const headers = [...HEADERS, ...(part.headers ?? [])];
+    expect(parseMessage(msg({ ...part, headers })).body).toBe("あ");
+  });
+
+  it("decodes ISO-2022-JP", () => {
+    const part = rawLeaf("text/plain", ISO2022JP_A, "ISO-2022-JP");
+    const headers = [...HEADERS, ...(part.headers ?? [])];
+    expect(parseMessage(msg({ ...part, headers })).body).toBe("あ");
+  });
+
+  it("falls back to UTF-8 when no charset is declared", () => {
+    const jp = "日本語のテスト";
+    const p = parseMessage(
+      msg({ ...leaf("text/plain", jp), headers: HEADERS }),
+    );
+    expect(p.body).toBe(jp);
+  });
+
+  it("falls back to UTF-8 on an unknown charset label", () => {
+    const jp = "ねこ";
+    const part: GmailMessagePart = {
+      mimeType: "text/plain",
+      headers: [{ name: "Content-Type", value: 'text/plain; charset="x-bogus"' }],
+      body: { data: b64(jp) },
+    };
+    const headers = [...HEADERS, ...(part.headers ?? [])];
+    expect(parseMessage(msg({ ...part, headers })).body).toBe(jp);
+  });
+});
+
+describe("parseMessage — RFC2047 encoded-word headers", () => {
+  it("decodes a Base64 (B) encoded-word subject and from", () => {
+    const enc = (s: string) =>
+      "=?UTF-8?B?" + Buffer.from(s, "utf8").toString("base64") + "?=";
+    const headers = [
+      { name: "From", value: `${enc("送信者")} <a@ex.com>` },
+      { name: "Subject", value: enc("テスト件名") },
+    ];
+    const p = parseMessage(msg({ ...leaf("text/plain", "x"), headers }));
+    expect(p.subject).toBe("テスト件名");
+    expect(p.from).toContain("送信者");
+    expect(p.from).toContain("<a@ex.com>");
+  });
+
+  it("decodes a Quoted-Printable (Q) encoded-word", () => {
+    // "a b" with _ for space and =41 for 'A' style is overkill; use a real é.
+    const headers = [
+      { name: "Subject", value: "=?UTF-8?Q?caf=C3=A9_test?=" },
+    ];
+    const p = parseMessage(msg({ ...leaf("text/plain", "x"), headers }));
+    expect(p.subject).toBe("café test");
+  });
+
+  it("leaves an already-plain subject unchanged (idempotent no-op)", () => {
+    const headers = [{ name: "Subject", value: "Plain 件名 = ok" }];
+    const p = parseMessage(msg({ ...leaf("text/plain", "x"), headers }));
+    expect(p.subject).toBe("Plain 件名 = ok");
   });
 });
