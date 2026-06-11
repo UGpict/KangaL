@@ -92,6 +92,16 @@ export function decryptSession(
   }
 }
 
+// Reads the Gmail session from a request's cookies, returning it only if it is
+// present AND not expired. Used by the message routes (and mirrors the check in
+// /api/gmail/status) so token decryption + expiry live in one place.
+export function readSession(request: Request): GmailSession | null {
+  const cookies = parseCookies(request.headers.get("cookie"));
+  const session = decryptSession(cookies[SESSION_COOKIE]);
+  if (!session || session.expiresAt <= Date.now()) return null;
+  return session;
+}
+
 export function parseCookies(header: string | null): Record<string, string> {
   const out: Record<string, string> = {};
   if (!header) return out;

@@ -2,15 +2,11 @@ import { analyzeStructure } from "@/agents/analyzeStructure";
 import { investigate } from "@/agents/investigate";
 import { judge } from "@/agents/judge";
 import { readBoundedJson } from "@/lib/readBoundedJson";
+import { MAX_AUTH_LENGTH, MAX_MESSAGE_LENGTH } from "@/lib/inputLimits";
 import type {
   InvestigationBonus,
   InvestigationReport,
 } from "@/types/investigation";
-
-const MAX_MESSAGE_LENGTH = 8000;
-// authenticationResults にも message と同じく長さ上限を掛ける。これが無いと
-// message="hi" + 巨大 auth で MAX_MESSAGE_LENGTH ガードを迂回して body を肥大化できる。
-const MAX_AUTH_LENGTH = 4000;
 
 export type JudgeResponseBody =
   | { degraded: true }
