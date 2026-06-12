@@ -2,6 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { JudgeResponseBody } from "@/app/api/judge/route";
+import {
+  callbackErrorMessage,
+  classifyGmailError,
+  detailToActive,
+  gmailErrorMessage,
+  isGmailActiveId,
+  truncationNotice,
+  type ActiveMessage,
+} from "@/lib/gmailClient";
+import type { MessageSummary, ParsedMessage } from "@/lib/gmailParse";
 import { SAMPLE_MESSAGES, type InboxMessage } from "@/lib/sampleMessages";
 import { DANGER_SCORE_THRESHOLD, summarizeBonus } from "@/lib/weights";
 import type { UserDecision } from "@/types/feedback";
@@ -15,7 +25,32 @@ type LoadState =
   | { kind: "idle" }
   | { kind: "loading" }
   | { kind: "ok"; data: JudgeResponseBody }
-  | { kind: "error"; message: string };
+  | {
+      kind: "error";
+      message: string;
+      title?: string;
+      retry?: () => void;
+      reconnect?: boolean;
+    };
+
+type GmailConn =
+  | { kind: "unknown" } // status not yet fetched on mount
+  | { kind: "disconnected" }
+  | { kind: "connected"; expiresAt: number };
+
+// Sample fixtures collapse to the same ActiveMessage shape as Gmail messages so
+// the reading pane / judge POST / VerdictCard are shared with no duplication.
+function activeFromSample(m: InboxMessage): ActiveMessage {
+  return {
+    id: m.id,
+    source: "sample",
+    from: m.from,
+    subject: m.subject,
+    receivedAt: m.receivedAt,
+    body: m.body,
+    authenticationResults: m.authenticationResults,
+  };
+}
 
 type RiskColor = "red" | "emerald" | "slate";
 
@@ -80,11 +115,24 @@ function RiskBadge({
 }
 
 export default function InboxApp() {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [active, setActive] = useState<ActiveMessage | null>(null);
   const [cache, setCache] = useState<Record<string, JudgeResponseBody>>({});
   const [decisions, setDecisions] = useState<Record<string, UserDecision>>({});
   const [state, setState] = useState<LoadState>({ kind: "idle" });
   const verdictRef = useRef<HTMLDivElement | null>(null);
+
+  // Gmail intake (G3): an additive entrance that converges on the same
+  // /api/judge gate. No separate judge route, no guard bypass.
+  const [gmailConn, setGmailConn] = useState<GmailConn>({ kind: "unknown" });
+  const [gmailList, setGmailList] = useState<MessageSummary[] | null>(null);
+  const [gmailListState, setGmailListState] = useState<
+    "idle" | "loading" | "error"
+  >("idle");
+  const [gmailListError, setGmailListError] = useState<string | null>(null);
+  const [gmailBanner, setGmailBanner] = useState<string | null>(null);
+  const [gmailBusyId, setGmailBusyId] = useState<string | null>(null);
+
+  const selectedId = active?.id ?? null;
 
   // 永続済みの逃げ道（userVerdicts）を起動時に復元。認証なし環境では空で返るので
   // UI は劣化しない。
@@ -101,7 +149,42 @@ export default function InboxApp() {
     };
   }, []);
 
+  // Gmail 連携状態の取得＋ callback エラー（?gmail_error=<code>）の人間語化。
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/gmail/status")
+      .then((r) => (r.ok ? r.json() : { connected: false }))
+      .then((d: { connected?: boolean; expiresAt?: number }) => {
+        if (cancelled) return;
+        setGmailConn(
+          d?.connected && typeof d.expiresAt === "number"
+            ? { kind: "connected", expiresAt: d.expiresAt }
+            : { kind: "disconnected" },
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setGmailConn({ kind: "disconnected" });
+      });
+    // Defer to a microtask so the synchronous read doesn't setState in the
+    // effect body (and initial SSR/client render both start at null → no
+    // hydration mismatch on the ?gmail_error banner).
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      const code = new URLSearchParams(window.location.search).get(
+        "gmail_error",
+      );
+      const msg = callbackErrorMessage(code);
+      if (msg) setGmailBanner(msg);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // 逃げ道の上書き: 楽観的にローカル反映してから永続化。decision === null は取り消し。
+  // Gmail 由来の判定は永続化しない（実メール由来データを Firestore/corpus/holdout
+  // へ書かないという G2 の読み取り専用境界を、入口から出口まで一貫させる。本文を
+  // 含まずとも実メッセージ ID・判定結果の永続化に変わりないため）。
   async function decide(messageId: string, decision: UserDecision | null) {
     setDecisions((prev) => {
       const next = { ...prev };
@@ -109,6 +192,7 @@ export default function InboxApp() {
       else next[messageId] = decision;
       return next;
     });
+    if (isGmailActiveId(messageId)) return;
     try {
       await fetch("/api/feedback", {
         method: "POST",
@@ -120,13 +204,10 @@ export default function InboxApp() {
     }
   }
 
-  const selected: InboxMessage | undefined = SAMPLE_MESSAGES.find(
-    (m) => m.id === selectedId,
-  );
-
-  async function selectMessage(message: InboxMessage) {
-    setSelectedId(message.id);
-    const cached = cache[message.id];
+  // Shared judge path for both sample and Gmail messages — the single门.
+  async function judgeActive(msg: ActiveMessage) {
+    setActive(msg);
+    const cached = cache[msg.id];
     if (cached) {
       setState({ kind: "ok", data: cached });
       return;
@@ -137,8 +218,8 @@ export default function InboxApp() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: message.body,
-          authenticationResults: message.authenticationResults,
+          message: msg.body,
+          authenticationResults: msg.authenticationResults,
         }),
       });
       if (!response.ok) {
@@ -148,15 +229,97 @@ export default function InboxApp() {
         throw new Error(errKey);
       }
       const data = (await response.json()) as JudgeResponseBody;
-      setCache((prev) => ({ ...prev, [message.id]: data }));
+      setCache((prev) => ({ ...prev, [msg.id]: data }));
       setState({ kind: "ok", data });
     } catch (e) {
+      const errKey = e instanceof Error ? e.message : "unknown";
       setState({
         kind: "error",
-        message: e instanceof Error ? e.message : "unknown",
+        message: `通信または解析に失敗しました (${errKey})。`,
+        retry: () => judgeActive(msg),
       });
     }
   }
+
+  function selectSample(message: InboxMessage) {
+    void judgeActive(activeFromSample(message));
+  }
+
+  async function importInbox() {
+    setGmailListState("loading");
+    setGmailListError(null);
+    setGmailBanner(null);
+    try {
+      const res = await fetch("/api/gmail/messages");
+      if (!res.ok) {
+        const kind = classifyGmailError(res.status);
+        if (kind === "reconnect") {
+          setGmailConn({ kind: "disconnected" });
+          setGmailList(null);
+          setGmailBanner(gmailErrorMessage("reconnect"));
+        }
+        setGmailListState("error");
+        setGmailListError(gmailErrorMessage(kind));
+        return;
+      }
+      const body = (await res.json()) as { messages?: MessageSummary[] };
+      setGmailList(body.messages ?? []);
+      setGmailListState("idle");
+    } catch {
+      setGmailListState("error");
+      setGmailListError(gmailErrorMessage(classifyGmailError(null)));
+    }
+  }
+
+  async function selectGmail(summary: MessageSummary) {
+    setGmailBusyId(summary.id);
+    // 取得中も読み取りペインにヘッダを出す（本文は取得後に差し替え）。
+    setActive({
+      id: `gmail:${summary.id}`,
+      source: "gmail",
+      from: summary.from,
+      subject: summary.subject,
+      receivedAt: summary.date,
+      body: "",
+    });
+    setState({ kind: "loading" });
+    try {
+      const res = await fetch(
+        `/api/gmail/messages/${encodeURIComponent(summary.id)}`,
+      );
+      if (!res.ok) {
+        const kind = classifyGmailError(res.status);
+        if (kind === "reconnect") {
+          setGmailConn({ kind: "disconnected" });
+          setGmailBanner(gmailErrorMessage("reconnect"));
+        }
+        setState({
+          kind: "error",
+          title: "Gmail 連携エラー",
+          message: gmailErrorMessage(kind),
+          reconnect: kind === "reconnect",
+          retry: kind === "reconnect" ? undefined : () => selectGmail(summary),
+        });
+        return;
+      }
+      const detail = (await res.json()) as ParsedMessage;
+      await judgeActive(detailToActive(summary.id, summary, detail));
+    } catch {
+      setState({
+        kind: "error",
+        title: "Gmail 連携エラー",
+        message: gmailErrorMessage(classifyGmailError(null)),
+        retry: () => selectGmail(summary),
+      });
+    } finally {
+      setGmailBusyId(null);
+    }
+  }
+
+  const selected = active;
+  const truncNote = selected
+    ? truncationNotice(selected.truncated, selected.authTruncated)
+    : null;
 
   // Smooth-scroll the verdict card into view when it appears.
   useEffect(() => {
@@ -169,11 +332,11 @@ export default function InboxApp() {
   }, [state.kind, selectedId]);
 
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+    <div className="flex h-screen flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
       {/* ブランド色 navy+cyan はヘッダーにのみ適用。状態色（赤/緑/灰）とは混ぜない。 */}
       <header
         style={{ backgroundColor: "var(--brand-navy)" }}
-        className="border-b border-black/20 px-6 py-3"
+        className="shrink-0 border-b border-black/20 px-6 py-3"
       >
         <h1 className="text-xl font-bold tracking-tight text-white">
           Kanga
@@ -182,7 +345,19 @@ export default function InboxApp() {
         <p className="text-xs text-white/60">進化して、詐欺に食らいつく。</p>
       </header>
 
-      <main className="grid h-[calc(100vh-64px)] grid-cols-1 lg:grid-cols-[340px_1fr]">
+      <GmailSection
+        conn={gmailConn}
+        list={gmailList}
+        listState={gmailListState}
+        listError={gmailListError}
+        banner={gmailBanner}
+        busyId={gmailBusyId}
+        activeId={selectedId}
+        onImport={importInbox}
+        onSelect={selectGmail}
+      />
+
+      <main className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[340px_1fr]">
         <aside className="overflow-y-auto border-r border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
           <div className="border-b border-zinc-200 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:border-zinc-800">
             受信箱
@@ -196,7 +371,7 @@ export default function InboxApp() {
                 <li key={m.id}>
                   <button
                     type="button"
-                    onClick={() => selectMessage(m)}
+                    onClick={() => selectSample(m)}
                     className={`flex w-full gap-3 border-b border-zinc-100 px-4 py-3 text-left transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800 ${
                       isSelected
                         ? "bg-zinc-100 dark:bg-zinc-800"
@@ -260,6 +435,10 @@ export default function InboxApp() {
                 {selected.body}
               </div>
 
+              {truncNote && (
+                <p className="mb-4 text-xs text-zinc-500">{truncNote}</p>
+              )}
+
               <div ref={verdictRef}>
                 {state.kind === "loading" && (
                   <div className="rounded-lg border border-zinc-200 bg-white p-5 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
@@ -271,17 +450,31 @@ export default function InboxApp() {
                 )}
                 {state.kind === "error" && (
                   <div className="rounded-lg border border-zinc-300 bg-zinc-50 p-5 text-sm dark:border-zinc-700 dark:bg-zinc-900">
-                    <div className="mb-2 font-semibold">判定エラー</div>
+                    <div className="mb-2 font-semibold">
+                      {state.title ?? "判定エラー"}
+                    </div>
                     <p className="text-zinc-600 dark:text-zinc-400">
-                      通信または解析に失敗しました ({state.message})。
+                      {state.message}
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => selected && selectMessage(selected)}
-                      className="mt-3 rounded border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-                    >
-                      再試行
-                    </button>
+                    <div className="mt-3 flex flex-wrap gap-3">
+                      {state.retry && (
+                        <button
+                          type="button"
+                          onClick={state.retry}
+                          className="rounded border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                        >
+                          再試行
+                        </button>
+                      )}
+                      {state.reconnect && (
+                        <a
+                          href="/api/gmail/auth"
+                          className="rounded border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                        >
+                          再連携する
+                        </a>
+                      )}
+                    </div>
                   </div>
                 )}
                 {state.kind === "ok" && (
@@ -300,6 +493,134 @@ export default function InboxApp() {
         </section>
       </main>
     </div>
+  );
+}
+
+// Gmail 取り込みセクション（G3）。トップに常設。未連携→連携ボタン、連携済み→
+// 取り込み、取り込み後→直近10件の一覧。選択は親の onSelect 経由で既存の判定
+// 動線（/api/judge→VerdictCard）に合流する。状態色（赤/緑/灰）は使わない＝これは
+// 判定結果ではなく入口の操作。
+function GmailSection({
+  conn,
+  list,
+  listState,
+  listError,
+  banner,
+  busyId,
+  activeId,
+  onImport,
+  onSelect,
+}: {
+  conn: GmailConn;
+  list: MessageSummary[] | null;
+  listState: "idle" | "loading" | "error";
+  listError: string | null;
+  banner: string | null;
+  busyId: string | null;
+  activeId: string | null;
+  onImport: () => void;
+  onSelect: (summary: MessageSummary) => void;
+}) {
+  return (
+    <section className="shrink-0 border-b border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="mx-auto flex max-w-5xl flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+            Gmail 連携
+          </span>
+          {conn.kind === "unknown" && (
+            <span className="text-xs text-zinc-400">確認中...</span>
+          )}
+          {conn.kind === "disconnected" && (
+            <a
+              href="/api/gmail/auth"
+              className="rounded-md bg-zinc-800 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-zinc-700 dark:bg-zinc-200 dark:text-zinc-900 dark:hover:bg-white"
+            >
+              Gmail と連携
+            </a>
+          )}
+          {conn.kind === "connected" && (
+            <button
+              type="button"
+              onClick={onImport}
+              disabled={listState === "loading"}
+              className="rounded-md bg-zinc-800 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-60 dark:bg-zinc-200 dark:text-zinc-900 dark:hover:bg-white"
+            >
+              {listState === "loading" ? "取り込み中..." : "受信箱から取り込む"}
+            </button>
+          )}
+        </div>
+
+        {banner && (
+          <div className="flex flex-wrap items-center gap-3 rounded border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+            <span>{banner}</span>
+            {conn.kind !== "connected" && (
+              <a
+                href="/api/gmail/auth"
+                className="rounded border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-600 dark:hover:bg-zinc-700"
+              >
+                再連携する
+              </a>
+            )}
+          </div>
+        )}
+
+        {listState === "error" && listError && (
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">{listError}</p>
+        )}
+
+        {list !== null && listState !== "error" && (
+          <>
+            {list.length === 0 ? (
+              <p className="text-sm text-zinc-500">
+                受信箱にメッセージがありません。
+              </p>
+            ) : (
+              <ul className="max-h-56 divide-y divide-zinc-100 overflow-y-auto rounded border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+                {list.map((m) => {
+                  const isActive = activeId === `gmail:${m.id}`;
+                  return (
+                    <li key={m.id}>
+                      <button
+                        type="button"
+                        onClick={() => onSelect(m)}
+                        disabled={busyId === m.id}
+                        className={`flex w-full items-start gap-3 px-3 py-2 text-left transition-colors hover:bg-zinc-50 disabled:opacity-60 dark:hover:bg-zinc-800 ${
+                          isActive ? "bg-zinc-100 dark:bg-zinc-800" : ""
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-baseline justify-between gap-2">
+                            <span className="truncate text-xs text-zinc-500">
+                              {m.from || "(差出人不明)"}
+                            </span>
+                            <span className="shrink-0 text-[10px] text-zinc-400">
+                              {m.date}
+                            </span>
+                          </div>
+                          <div className="truncate text-sm font-medium">
+                            {m.subject || "(件名なし)"}
+                          </div>
+                          <div className="line-clamp-1 text-xs text-zinc-500">
+                            {m.snippet}
+                          </div>
+                        </div>
+                        {busyId === m.id && (
+                          <span
+                            aria-label="取得中"
+                            className="mt-1 h-2 w-2 shrink-0 animate-pulse rounded-full bg-zinc-400"
+                          />
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </>
+        )}
+      </div>
+    </section>
   );
 }
 
