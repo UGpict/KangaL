@@ -65,6 +65,37 @@ subtle BEC が緑に落ちる典型構成:
 出ていたのと同じ構造の、能動的な裏取り。holdout は受け身の本物サンプル、本件は A4 が
 能動生成した敵対サンプルで、**どちらも“判定床が低位 subtle 型に届かない”**を別経路で示す。
 
+## 再現性の限界と代理確認の構成（恒久手順）
+
+この4通は **report-only** で実施し、生成した詐欺文面を fixture として保存していない
+（道B＝攻撃側の生成物を残さない、の設計帰結）。よって「同じ4通を analyzeStructure に
+再投入して 4/4 を再現する」ことは**構造的にできない**。今後、決勝前に判定パイプラインへ
+何か変更を入れたくなったとき（例: 2026-06-13 の thinkingConfig + Web Risk 実働化バッチ）も
+この制約は変わらない。そこで「4/4-緑が崩れていないか」を **2層に分解した代理確認**で担保する。
+
+なぜ2層で十分か: 4/4-緑は機序がはっきりしている。「知覚層（analyzeStructure）が攻撃を
+*知覚はしている*（missed-perception=0）が、判定層（judge/computeScore）に床が無いので
+緑に落ちる」という現在地。崩れるとしたら (1) 判定層の床/重みが変わる か (2) 知覚層が
+攻撃を取りこぼし始める の2経路しかない。各経路を独立に観測する。
+
+- **判定層 ＝ 決定性プローブ**（`scripts/probeFloorSeparationH1b.ts`・LLM コール ゼロ）。
+  subtle BEC のレバー署名を合成ベクトルで author し `computeScore` に通す。
+  `src/lib/weights.ts` と `judge.ts:67-76` を触らない限り出力は**バイト不変**。
+  m-7〜m-10（subtle BEC クラス）が 31–45 の緑帯に残れば、4/4-緑の*判定層側の機序*は不変。
+  ※ thinkingConfig は LLM 層のみに効き computeScore には一切効かない＝この層は定義上不変。
+- **知覚層 ＝ holdout の missed-perception**（`scripts/evalRealHoldout.ts` の byClass）。
+  4通の文面は無いが、外部 holdout n=6 が同じ subtle 構造の受け身サンプル。
+  **missed-perception=0 が維持**されていれば「知覚層はなお攻撃を知覚できている」＝
+  4通も知覚され続けている蓋然性が高い（取りこぼしは判定床側、という現在地が不変）。
+  もし missed-perception が baseline を割れば、それが知覚層リグレッションの一次シグナル。
+
+適用手順（変更を入れる前後で1回ずつ、または変更後に baseline と比較）:
+1. `probeFloorSeparationH1b` を回し、subtle BEC 群が緑帯のままか（判定層）。
+2. `evalRealHoldout` を回し、`missed-perception=0` が維持か（知覚層）。
+3. 両方 hold すれば、入手可能な証拠の範囲で「レッドチーム 4/4 の姿勢は不変」と言える。
+   どちらかが動いたら、完成文の再投入ができない以上、A4 で**新規に**敵対サンプルを
+   生成し直して観測する（report-only・道B 維持）。
+
 ## 未対応（床の最終決定は人間ゲート）
 
 - intensity 下限 / BEC 構造床は**未実装**（設計・校正中）。

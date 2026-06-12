@@ -73,6 +73,12 @@ gcloud run services proxy kangal --region us-central1   # → http://localhost:8
    gcloud run services update kangal --region us-central1 \
      --set-secrets "WEB_RISK_API_KEY=web-risk-api-key:latest"
    ```
+   **G4 完了条件（本番配線後）:** `submission/protopedia-writeup.md` の「Web Risk は本番未配線」
+   行（§「隠さない限界」, 旧 line 89）を「本番配線済み」へ更新する。ローカルでは
+   `WEB_RISK_API_KEY` 投入で `urlReputation` が実レスポンス（benign→`[]` / 悪性→
+   `SOCIAL_ENGINEERING` 等）を返すことを実機確認済み（2026-06-13、
+   `implementation-notes/latency-thinkingbudget-sweep.md`）＝コード経路は動く。残るは本番 SA への
+   Secret 配線のみ。配線完了まで writeup は「未配線」のまま（正確）。
 
 6. **本番 knownScams が `PERMISSION_DENIED`（Firestore）。** ライブ確認で `knownScams` が `7 PERMISSION_DENIED` を返した。実行 SA に Firestore 読み取り権限が無いため。骨格では degrade で吸収されるが、**Phase 1（事例DB照合）で効かせるには実行 SA に `roles/datastore.user` を付与し Firestore を有効化する必要がある**。骨格デプロイのスコープ外＝今回は未対応の既知事項。
 ```bash
