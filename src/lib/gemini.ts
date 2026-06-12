@@ -43,6 +43,13 @@ export async function generateJson(
       temperature: input.temperature ?? 0.2,
       responseMimeType: "application/json",
       responseSchema: input.responseSchema as Schema,
+      // We deliberately do NOT cap thinking here. gemini-2.5-flash defaults
+      // thinking ON (unbounded) ⇒ ~48s single-call latency, but a measured
+      // sweep showed capping it regresses perception: budget 0 AND 512 both
+      // dropped the fine-grained personalization read (targeted+transaction_
+      // history → broadcast+[]), lowering holdout recall (floor70 1/6 → 0/6).
+      // Latency is mitigated at the UX layer (調査中カード) instead.
+      // Data/rationale: implementation-notes/latency-thinkingbudget-sweep.md
     },
   });
   return { text: response.text ?? "" };
@@ -147,6 +154,9 @@ export async function generateWithTools(
         temperature: input.temperature ?? 0.2,
         tools: [{ functionDeclarations: input.tools as never }],
         abortSignal: input.signal,
+        // No thinking cap here either — same measured tradeoff as generateJson:
+        // capping (0 or 512) regressed lever perception and holdout recall.
+        // Data/rationale: implementation-notes/latency-thinkingbudget-sweep.md
       },
     });
 
