@@ -121,6 +121,31 @@ export default function InboxApp() {
   const [state, setState] = useState<LoadState>({ kind: "idle" });
   const verdictRef = useRef<HTMLDivElement | null>(null);
 
+  // G3.1 race gating. The wire carries a single final verdict (no intermediate
+  // score), so the ONLY way red/green can oscillate is an overlapping/stale
+  // response overwriting the displayed one. We mirror judgeFlow.ts here:
+  //  - judgeSeqRef: every selection bumps this; a response applies only if its
+  //    captured seq still equals the latest (else it's stale → drop).
+  //  - abortRef: the in-flight fetch is aborted on a new selection so a
+  //    superseded request stops burning Vertex (best-effort: server doesn't
+  //    propagate the abort, but the client request is cut).
+  //  - inflightIdRef: a duplicate click on the message already being judged is
+  //    ignored, bounding cost to 1 click = 1 judge.
+  const judgeSeqRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const inflightIdRef = useRef<string | null>(null);
+
+  // Open a new selection: ignore a duplicate in-flight click on the same id,
+  // otherwise abort the prior fetch and bump the seq. Returns the new seq, or
+  // null when the click should be ignored.
+  function beginSelection(id: string): number | null {
+    if (inflightIdRef.current === id) return null;
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+    inflightIdRef.current = id;
+    return ++judgeSeqRef.current;
+  }
+
   // Gmail intake (G3): an additive entrance that converges on the same
   // /api/judge gate. No separate judge route, no guard bypass.
   const [gmailConn, setGmailConn] = useState<GmailConn>({ kind: "unknown" });
@@ -204,12 +229,18 @@ export default function InboxApp() {
     }
   }
 
-  // Shared judge path for both sample and Gmail messages — the single门.
-  async function judgeActive(msg: ActiveMessage) {
+  // Shared judge path for both sample and Gmail messages — the single门. The
+  // seq is captured at selection time; every setState that paints a verdict is
+  // gated on `seq === judgeSeqRef.current`, so a stale response is dropped and
+  // can never flip the card (the runtime mirror of judgeFlow.flowFromEvents).
+  async function runJudge(msg: ActiveMessage, seq: number, signal: AbortSignal) {
     setActive(msg);
     const cached = cache[msg.id];
     if (cached) {
-      setState({ kind: "ok", data: cached });
+      if (seq === judgeSeqRef.current) {
+        setState({ kind: "ok", data: cached });
+        inflightIdRef.current = null;
+      }
       return;
     }
     setState({ kind: "loading" });
@@ -221,6 +252,7 @@ export default function InboxApp() {
           message: msg.body,
           authenticationResults: msg.authenticationResults,
         }),
+        signal,
       });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
@@ -230,19 +262,33 @@ export default function InboxApp() {
       }
       const data = (await response.json()) as JudgeResponseBody;
       setCache((prev) => ({ ...prev, [msg.id]: data }));
-      setState({ kind: "ok", data });
+      if (seq === judgeSeqRef.current) setState({ kind: "ok", data });
     } catch (e) {
+      // Aborted by a newer selection → stay silent (the new selection owns the
+      // card). A stale-but-not-aborted failure is likewise dropped.
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      if (seq !== judgeSeqRef.current) return;
       const errKey = e instanceof Error ? e.message : "unknown";
       setState({
         kind: "error",
         message: `通信または解析に失敗しました (${errKey})。`,
-        retry: () => judgeActive(msg),
+        retry: () => rejudge(msg),
       });
+    } finally {
+      if (seq === judgeSeqRef.current) inflightIdRef.current = null;
     }
   }
 
+  // Open a fresh selection for an already-resolved ActiveMessage (direct judge
+  // path + retry target).
+  function rejudge(msg: ActiveMessage) {
+    const seq = beginSelection(msg.id);
+    if (seq === null) return;
+    void runJudge(msg, seq, abortRef.current!.signal);
+  }
+
   function selectSample(message: InboxMessage) {
-    void judgeActive(activeFromSample(message));
+    rejudge(activeFromSample(message));
   }
 
   async function importInbox() {
@@ -272,10 +318,14 @@ export default function InboxApp() {
   }
 
   async function selectGmail(summary: MessageSummary) {
+    const id = `gmail:${summary.id}`;
+    const seq = beginSelection(id);
+    if (seq === null) return; // duplicate click on the message being fetched
+    const signal = abortRef.current!.signal;
     setGmailBusyId(summary.id);
     // 取得中も読み取りペインにヘッダを出す（本文は取得後に差し替え）。
     setActive({
-      id: `gmail:${summary.id}`,
+      id,
       source: "gmail",
       from: summary.from,
       subject: summary.subject,
@@ -286,7 +336,9 @@ export default function InboxApp() {
     try {
       const res = await fetch(
         `/api/gmail/messages/${encodeURIComponent(summary.id)}`,
+        { signal },
       );
+      if (seq !== judgeSeqRef.current) return; // superseded → drop
       if (!res.ok) {
         const kind = classifyGmailError(res.status);
         if (kind === "reconnect") {
@@ -303,8 +355,12 @@ export default function InboxApp() {
         return;
       }
       const detail = (await res.json()) as ParsedMessage;
-      await judgeActive(detailToActive(summary.id, summary, detail));
-    } catch {
+      // Hand off to the shared judge path under the SAME seq/signal so the
+      // detail-fetch and the judge form one gated selection.
+      await runJudge(detailToActive(summary.id, summary, detail), seq, signal);
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      if (seq !== judgeSeqRef.current) return;
       setState({
         kind: "error",
         title: "Gmail 連携エラー",
@@ -312,7 +368,12 @@ export default function InboxApp() {
         retry: () => selectGmail(summary),
       });
     } finally {
-      setGmailBusyId(null);
+      // Release the in-flight guard so a retry on the same id isn't ignored.
+      // Guarded so a superseding selection (which now owns the refs) is intact.
+      if (seq === judgeSeqRef.current) {
+        setGmailBusyId(null);
+        inflightIdRef.current = null;
+      }
     }
   }
 
@@ -440,14 +501,7 @@ export default function InboxApp() {
               )}
 
               <div ref={verdictRef}>
-                {state.kind === "loading" && (
-                  <div className="rounded-lg border border-zinc-200 bg-white p-5 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
-                    <span className="inline-flex items-center gap-2">
-                      <span className="h-2 w-2 animate-pulse rounded-full bg-zinc-400" />
-                      判定中...
-                    </span>
-                  </div>
-                )}
+                {state.kind === "loading" && <InvestigatingCard />}
                 {state.kind === "error" && (
                   <div className="rounded-lg border border-zinc-300 bg-zinc-50 p-5 text-sm dark:border-zinc-700 dark:bg-zinc-900">
                     <div className="mb-2 font-semibold">
@@ -692,6 +746,40 @@ function NextSteps({
           報告する
         </button>
       )}
+    </div>
+  );
+}
+
+// 判定確定前の唯一の表示（G3.1）。赤/緑は終端状態であり、確定シグナル前には絶対に
+// 出さない。中立の zinc で、灰（degraded=判定保留）の slate カードとは色で明確に
+// 区別する。中間スコアは存在しない（ワイヤは単発の最終判定のみ）ので数値は出さず、
+// 「何を確認しているか」を D0.5 のツール名で静的に並べる。
+const INVESTIGATION_STEPS = [
+  "既知手口の照合",
+  "URL評価 (Web Risk)",
+  "送信者認証 (SPF / DKIM / DMARC)",
+  "ドメイン年齢",
+  "公的注意喚起",
+];
+
+function InvestigatingCard() {
+  return (
+    <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex items-center gap-2 text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+        <span className="h-2 w-2 animate-pulse rounded-full bg-zinc-400" />
+        調査中
+      </div>
+      <p className="mt-1 text-xs text-zinc-500">
+        すべての確認が終わってから判定を表示します。
+      </p>
+      <ul className="mt-3 grid grid-cols-1 gap-1.5 text-xs text-zinc-500 sm:grid-cols-2">
+        {INVESTIGATION_STEPS.map((label) => (
+          <li key={label} className="flex items-center gap-2">
+            <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-zinc-300" />
+            {label} を確認
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
