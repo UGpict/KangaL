@@ -66,13 +66,13 @@
 
 ## 5. 技術スタック（Google 純正）
 
-Next.js (TypeScript) / `@google/genai`（Vertex 経由・Gemini 2.5 Flash）/ Cloud Run / Firestore / Google Web Risk（コード実装済み・本番は鍵未配線）/ RDAP。
+Next.js (TypeScript) / `@google/genai`（Vertex 経由・Gemini 2.5 Flash）/ Cloud Run / Firestore / Google Web Risk（本番配線済み — Secret Manager 経由で鍵を実 SA に渡し、本番 `/api/judge` で実レスポンス疎通を確認）/ RDAP。
 
 Cloud Run へ**鍵レス（ADC）**でデプロイ。サービスアカウント JSON をリポジトリにもイメージにも置かず、実行 SA の身元で Vertex を叩く＝シークレットの正しい扱い。
 
 **協調ループは手組み（正直に）**: 攻撃⇄防御の協調は `loop.ts` の手組みオーケストレーション（for-loop）で実装している。唯一の動的判断＝調査のツール選択は既に function-calling にあり、ここにマルチエージェントフレームワークを被せても利得が薄いという判断。ADK は実験段階（`spike/` 限定）に留め、本番は `@google/genai` を直接叩く。フレームワークに頼らず協調を組んだ、というのが実装の事実。
 
-**リージョン構成**: Cloud Run / Vertex は `us-central1`、Firestore (default) は `asia-northeast1` で越境している。機能成立は確認済み（本番照合は degrade しない）で、レイテンシ最適化は将来課題。
+**リージョン構成**: Cloud Run / Vertex は `us-central1`、Firestore (default) は `asia-northeast1` で越境している。機能成立は確認済み（本番照合は degrade しない）。本番 `/api/judge`（analyze+investigate+judge の3段）の所要は **実測 22.6s（高速 Vertex 時・n=1）／典型 ~48s・遅 Vertex 日で最悪 ~113s**（いずれも 180s タイムアウト内に収まる）。レイテンシ最適化は将来課題で、体感は UX 層（調査中カード）で緩和している。
 
 ## 6. 測定の誠実さ（ここが KangaL の主張）
 
@@ -86,7 +86,6 @@ Cloud Run へ**鍵レス（ADC）**でデプロイ。サービスアカウント
 
 ### 隠さない限界
 
-- Web Risk は本番未配線（鍵を入れれば有効化・加点のみなので骨格は動く）。
 - 商用良性サンプル（FPR の本番ストレッサー）は未投入＝床を下げたときの真の誤検知リスクは未測定。床の最終決定は人間に保留。
 - subtle な非executive BEC（語調を和らげた送金・認証情報要求型）は床落ちで取りこぼす。動的レッドチーム（A4）の敵対サンプル 4/4 が緑（score 39–49・閾値70）に着地（この4通は report-only で実施した観測で、生成した詐欺文面は fixture として保存していない——攻撃側の生成物を残さないのは道Bの設計帰結であり、弱点でなく一貫した方針。ゆえに再現は完成文の再投入ではなく、判定層の決定論プローブ〔computeScore〕と holdout の missed-perception で代理する）。原因は intensity に下限が無く judge にも一般床も無いこと（friction=high が −2 で追い打ち）。これは自己改善ループ自身が炙り出した現在地で、行動レバー（送金・認証情報要求）に床を設ける方向で FPR 測定とセットで校正中。具体的手法は良性難ケースでの誤検知測定を経て決定する（床の最終決定は人間ゲート）。
 
@@ -102,7 +101,7 @@ Cloud Run へ**鍵レス（ADC）**でデプロイ。サービスアカウント
 
 - **つくる**（自律的に判断しタスクを実行するエージェント）: 防御の動的ツール選択（function-calling）・攻撃の evolve・手組み協調ループ。本番 Cloud Run で稼働。
 - **まわす**（AI を継続的に改善するサイクル）: 攻撃のすり抜けを検出 → 事例DBへ書き戻し → 次ラウンドで再判定、という**検知器の自己改善ループ**。KangaL の背骨であり差別化軸。※これはプロダクト（検知器）の継続的な自己改善であって、開発パイプラインの CI/CD 自動化そのものではない。開発側の CI（typecheck/test/build）は別途 `.github/workflows` に用意しており、プロダクトの自己改善ループと開発 CI の両方で「まわす」を踏んでいる。
-- **とどける**（本番品質でユーザーに届ける）: Cloud Run に本番デプロイ済み・公開URLで誰でも触れる（＝とどけるの基礎）。実運用での実メール連携（Gmail）は次フェーズで、現時点は未達と正直に記す。
+- **とどける**（本番品質でユーザーに届ける）: Cloud Run に本番デプロイ済み（＝とどけるの基礎）。本番は**認証必須で運用中**（無制限公開を避ける運用判断＝出血止め設計）で、審査用の公開アクセスは提出手順で有効化する。実メール連携（Gmail）は**本番配線済み**で、OAuth 初期化から**認可コード受領まで確認**（consent 通過・redirect_uri 一致・`gmail.readonly` 承認・state 往復）。認可コード↔トークン交換は本番が認証必須運用のため proxy 経由では完走せず、本書では交換手前までの実証に留める。
 
 | 基準 | KangaL での該当 |
 |---|---|
