@@ -210,3 +210,48 @@ gcloud projects add-iam-policy-binding ai-bridging \
   ```
 - **確認**: IAM ポリシー**バインディング0件** / `no-token GET=403`（公開外れ）/ `with-token=200`（正規アクセス維持）。撤去直後は伝播遅延で no-token=200 が約1〜2分残ったが、伝播後 403。
 - **運用方針**: 予算はアラート（通知）でハードストップではないため、**常時公開はしない**。デモ／審査窓のときだけ `add-iam-policy-binding allUsers → run.invoker` で開け、終わったら上記 `remove` で閉じる。一次審査はデモ動画＋ProtoPedia が主役でライブ URL 常時公開は必須要件でない（`docs/PLAN-v2.md` §5.0.1）。
+
+## G4 実行記録 — 本番デプロイ（提出構成 / Secret Manager・静的天井・認証必須 / 2026-06-13）
+
+前提: `thinkingConfig` revert 済み・全テスト緑・HEAD `4b779b0`。原則は「提案→人間承認→実行→検証」で在席ゲート維持。出血止め（認証必須）を崩さずデプロイし、**公開化（allUsers 付与）は提出直前の人間実行 runbook に分離**（本記録では実行しない）。
+
+### Phase A — Secret Manager（3シークレット・個別付与）
+
+- `secretmanager.googleapis.com` 有効化。
+- 3シークレットを `.env.local` から**非エコー**で作成（値はコマンドラインに出さずパイプ）:
+  ```bash
+  grep '^WEB_RISK_API_KEY=' .env.local | cut -d= -f2- | tr -d '\n' \
+    | gcloud secrets create web-risk-api-key --project ai-bridging --replication-policy=automatic --data-file=-
+  # 同形で gmail-session-key ← GMAIL_SESSION_KEY / google-oauth-client-secret ← GOOGLE_OAUTH_CLIENT_SECRET
+  ```
+  `tr -d '\n'` で末尾改行を除去（抽出バイト長 39/44/35 で値破損なしを事前確認）。各キー `lines=1` で `cut` の連結事故なし。
+- `kangal-runtime` SA へ `roles/secretmanager.secretAccessor` を**シークレット個別**に付与（`gcloud secrets add-iam-policy-binding <secret>`）。**プロジェクト全体には付与しない**。
+  - 検証: `projects get-iam-policy` の secretAccessor×SA は**空**（プロジェクト付与なし）／各シークレットの IAM メンバーは SA 1件のみ。
+
+### Phase B — デプロイ（認証必須・静的天井）
+
+- クリーン HEAD からビルドするため `git stash push -u`（probe/report スクリプト＋`analyzeStructure.ts` 既存差分を退避）→ デプロイ → `git stash pop`。standalone ビルドに `scripts/` は入らないため挙動同一。
+- `gcloud run deploy kangal --source . --no-allow-unauthenticated --service-account kangal-runtime@... --set-env-vars "...CLIENT_ID/REDIRECT_URI(本番リテラル)..." --set-secrets "WEB_RISK_API_KEY=web-risk-api-key:latest,GMAIL_SESSION_KEY=gmail-session-key:latest,GOOGLE_OAUTH_CLIENT_SECRET=google-oauth-client-secret:latest" --max-instances=2 --concurrency=8 --timeout=180 --memory 1Gi --cpu 1 --min-instances 0`
+  - CLIENT_ID は公開値＝平文 env。秘密は client_secret 側でシークレット参照。REDIRECT_URI は `.env.local`（ローカル用）でなく**本番リテラル**を直接渡す（焼き値と Console 登録のズレ＝`redirect_uri_mismatch` を避ける）。
+- 検証（describe）: リビジョン **`kangal-00006-4kw`** ／ image `...kangal@sha256:8b52968752...a6cfe5` ／ SA `kangal-runtime`（default に落ちず）／ 天井 maxScale=2・concurrency=8・timeout=180 ／ **invoker IAM 空（allUsers なし＝認証必須維持）** ／ secrets 3本 `:latest` 反映 ／ REDIRECT_URI 焼き値＝本番リテラル完全一致。
+- 切り戻し（手元に用意）: `gcloud run services update-traffic kangal --to-revisions kangal-00005-jqn=100 --region us-central1 --project ai-bridging`。
+
+### Phase C — 検証（認証プロキシ経由・IAM を触らない）
+
+AUTH-REQUIRED のまま検証するため `gcloud run services proxy kangal --port 8080`（個人アカへの run.invoker 一時付与はせず、出血止め一貫性を保つ）。
+
+- **C-7 judge パス**: `POST /api/judge`（URL 含む架空フィッシング）→ 200 / `degraded:false` / score=53(gray) / reason prose。3段が本番 Vertex 経由でライブ。
+- **C-8 Gmail OAuth 初期化**: `GET /api/gmail/auth` → 302 `accounts.google.com/o/oauth2/v2/auth`、redirect_uri=本番リテラル完全一致、client_id 一致、scope=`gmail.readonly` のみ。503 でない＝`gmail-session-key`＋OAuth 設定が配線済み。proxy 経由（IAM 非変更）で実機往復を試行 → **consent 通過・認可コード受領・state 往復まで到達したが、callback が本番URL着地で GFE 403（アプリ未到達）→ トークン交換は未発生**。redirect_uri が本番固定ゆえ proxy（`localhost:8080`）では callback がアプリに戻らず、**proxy 経由では構造的に完走不能**と確定。トークン交換の実証は公開時（runbook §1）へ持ち越し。
+- **C-9 urlReputation**: `{status:"ok", threats:[]}`、`missing_api_key` でない実レスポンス＝`web-risk-api-key` が値破損なく焼けた裏取り。
+- **C-10 レイテンシ**: `/api/judge` 1本=**22.6s**（高速 Vertex 時・n=1）。180s タイムアウトに対し余裕大。ProtoPedia は実測22.6s／典型~48s・最悪~113s の**レンジ併記**。
+
+### シークレット健全性の実証状況
+
+- `web-risk-api-key` — C-9 で実証済み。
+- `gmail-session-key` — C-8 の 302（非503）で配線実証。
+- `google-oauth-client-secret` — **未実証（既知ギャップ）**。トークン交換（callback）で初めて使われる。proxy 往復では redirect_uri が本番固定のため callback がアプリに戻らず（GFE 403）**構造的に完走不能と確定**。**本番公開時＝runbook §1 のトークン交換往復で消化予定**。
+
+### 残（人間ゲート）
+
+- **client_secret の実証**＝**公開後（runbook §1）**のトークン交換往復で消化（proxy 経由は redirect_uri 本番固定により構造的に不可と上記で確定）。
+- **公開化**（提出直前に allUsers→run.invoker 付与）と予算・kill・リポジトリ公開は `submission/submission-runbook.md` に分離。本記録では実行しない。
