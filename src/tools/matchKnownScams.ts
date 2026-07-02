@@ -1,12 +1,16 @@
 import type { AttackPattern } from "@/types/attackPattern";
 import { listAttackPatterns } from "@/lib/firestore";
-import { LEVER_KEYS, classifyMatchedLever, mainValue } from "@/lib/levers";
+import { leverSimilarity } from "@/lib/leverVector";
 import type { KnownScamMatch } from "@/types/investigation";
 
-// Hit threshold for "this matches a known scam pattern". 0.5 = at least 3 of
-// 6 ACTIVE main-enum values match. Below this is treated as noise; without the
-// threshold a freshly-seeded scam corpus would match every pattern at 0/6 = 0
-// similarity once we start adding patterns with sparse enum overlap.
+// Hit threshold for "this matches a known scam pattern". Now a WEIGHTED-COSINE
+// threshold (leverVector.leverSimilarity ∈ [0,1]), not a fraction-of-6 count.
+// PROVISIONAL value: 0.5 is a placeholder for the dense scale pending the
+// offline sweep in scripts/calibrateKnownScamThreshold.ts, which picks τ to
+// maximize scam recall subject to no effective-band FPR regression on the real
+// holdout. Do NOT treat 0.5 as calibrated. NOTE (lockstep debt): generalization
+// Check.ts still mirrors the OLD discrete numerator; migrate it to leverSimilarity
+// in the same change that finalizes τ from the sweep.
 export const KNOWN_SCAM_HIT_THRESHOLD = 0.5;
 export const KNOWN_SCAM_MAX_MATCHES = 5;
 
@@ -19,36 +23,22 @@ export type MatchKnownScamsResult =
   | { ok: true; matches: KnownScamMatch[] }
   | { ok: false; reason: string };
 
-// T5 pillar-1 (ii): the numerator counts ACTIVE matched levers only. A matched
-// lever is credited only when classifyMatchedLever marks it active — i.e. it
-// reflects an attacker's deliberate choice. Artifact matches (incentive.type's
-// reward/fear coin-flip; absence matches like urgency/isolation "none",
-// personalization "broadcast", authority "none") are NOT evidence the detector
-// recognized an attack structure, so they contribute 0.
-//
-// This is a PRINCIPLE-driven change, not holdout fitting: "absence and a
-// coin-flip are not evidence" is stated independently of any holdout, and it
-// can only LOWER similarity (the numerator shrinks) — it is structurally unable
-// to inflate recall on known cases. It is the detector-side mirror of the
-// evaluation-side strictening validated in T2-③ (generalizationCheck).
-//
-// The denominator stays fixed at LEVER_KEYS.length (6) — NOT the count of
-// active-capable levers — so the 0.5 threshold keeps a single, pattern-
-// independent meaning (shrinking the denominator per pattern would make the
-// threshold easier for absence-heavy patterns = a tuning knob we refuse).
-function similarity(
-  a: AttackPattern["levers"],
-  b: AttackPattern["levers"],
-): number {
-  let matched = 0;
-  for (const key of LEVER_KEYS) {
-    const va = mainValue(key, a);
-    if (va === mainValue(key, b) && classifyMatchedLever(key, va) === "active") {
-      matched += 1;
-    }
-  }
-  return matched / LEVER_KEYS.length;
-}
+// Similarity is now leverVector.leverSimilarity: a weighted cosine over
+// strength-scaled one-hot lever blocks (@/lib/leverVector). It preserves every
+// principle of the old discrete "active matched / 6" rule but as a CONTINUOUS
+// measure, so near-misses the 3/6 cutoff dropped can now clear the threshold:
+//  - absence (urgency/isolation "none", authority "none", personalization
+//    "broadcast") encodes to a zero block ⇒ contributes 0, same as the old
+//    "artifact" exclusion;
+//  - the incentive reward/fear coin-flip is structurally invisible (a single
+//    shared magnitude axis) ⇒ a byte-identical pattern scores 1.0, and so does
+//    one differing ONLY in incentive.type — a stronger form of "coin-flip never
+//    credited" than the old 5/6;
+//  - LEVER_WEIGHTS drive the cosine, so heavy levers (isolation, callToAction,
+//    personalization) dominate — principled, holdout-independent.
+// Structural non-inflation: cosine ≤ 1 caps any single doc's contribution and
+// the downstream bonus is count-capped (weights.ts), so the change cannot
+// manufacture recall on known cases.
 
 export async function matchKnownScams(args: {
   levers: AttackPattern["levers"];
@@ -57,7 +47,7 @@ export async function matchKnownScams(args: {
     const patterns = await listAttackPatterns();
     const matches: KnownScamMatch[] = [];
     for (const p of patterns) {
-      const s = similarity(args.levers, p.levers);
+      const s = leverSimilarity(args.levers, p.levers);
       if (s >= KNOWN_SCAM_HIT_THRESHOLD) {
         matches.push({ id: p.id, similarity: s });
       }

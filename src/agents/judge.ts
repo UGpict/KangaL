@@ -4,14 +4,12 @@ import { generateJson } from "@/lib/gemini";
 import { wrapUntrusted } from "@/lib/untrustedInput";
 import {
   computeInvestigationBonus,
-  CTA_DANGER,
   DANGER_SCORE_THRESHOLD,
-  FRICTION_ADJ,
   ISOLATION_FLOORS,
   LEVER_WEIGHTS,
   type LeverKey,
   maxRawScore,
-  PERSONALIZATION_LEVEL_RANK,
+  strengthOf,
 } from "@/lib/weights";
 import type {
   InvestigationBonus,
@@ -24,43 +22,6 @@ export type JudgeResult = {
   isolationNote: string | null;
   investigationBonus: InvestigationBonus;
 };
-
-// All lever strengths normalized to a 0-3 scale matching `intensity`.
-// callToAction is clamped on BOTH ends: it can go negative pre-clamp
-// (call_number + high = -1), and the upper clamp is kept as a safety net for
-// future DANGER/FRICTION_ADJ edits. `?? 0` guards against off-enum values that
-// somehow slip past responseSchema.
-function strengthOf(
-  levers: AttackPattern["levers"],
-): Record<LeverKey, number> {
-  return {
-    urgency: levers.urgency.intensity,
-    authority:
-      levers.authority.impersonates === "none"
-        ? 0
-        : Math.min(3, 1 + levers.authority.credibilityTricks.length),
-    // N2: incentive.type ("reward" vs "fear") and incentive.hook are
-    // intentionally NOT folded into the strength — strength uses intensity
-    // only. Differential weighting of fear vs reward (a known calibration
-    // gap) is deferred to a future design update; documented as a future
-    // task in design v0.5 §5.2.
-    incentive: levers.incentive.intensity,
-    callToAction: Math.max(
-      0,
-      Math.min(
-        3,
-        (CTA_DANGER[levers.callToAction.action] ?? 0) +
-          (FRICTION_ADJ[levers.callToAction.friction] ?? 0),
-      ),
-    ),
-    personalization: Math.min(
-      3,
-      PERSONALIZATION_LEVEL_RANK[levers.personalization.level] +
-        (levers.personalization.signals.length > 0 ? 1 : 0),
-    ),
-    isolation: levers.isolation.intensity,
-  };
-}
 
 // Lever-only score (linear weighted sum lifted by isolation floor when
 // isolation is strong). Investigation bonus is layered on top in `judge`.
