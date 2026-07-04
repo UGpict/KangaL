@@ -546,6 +546,22 @@ export default function InboxApp() {
           )}
         </section>
       </main>
+
+      <footer className="shrink-0 border-t border-zinc-200 bg-white px-6 py-2.5 text-center text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
+        <a
+          href="/privacy"
+          className="underline underline-offset-2 hover:text-zinc-700 dark:hover:text-zinc-300"
+        >
+          プライバシーポリシー
+        </a>
+        <span className="mx-2">·</span>
+        <a
+          href="/terms"
+          className="underline underline-offset-2 hover:text-zinc-700 dark:hover:text-zinc-300"
+        >
+          利用規約
+        </a>
+      </footer>
     </div>
   );
 }
