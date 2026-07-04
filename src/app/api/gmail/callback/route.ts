@@ -40,10 +40,19 @@ function failRedirect(origin: string, error: CallbackError): Response {
 
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
-  const origin = url.origin;
 
   const config = readOAuthConfig();
-  if (!config) return failRedirect(origin, "not_configured");
+  if (!config) return failRedirect(url.origin, "not_configured");
+  // Post-auth redirects derive their origin from the configured OAuth redirect
+  // URI (the public URL), NOT from request.url. On Cloud Run request.url
+  // reflects the internal container address (e.g. http://0.0.0.0:8080), which
+  // would 302 the user to an unreachable page after a successful sign-in.
+  let origin: string;
+  try {
+    origin = new URL(config.redirectUri).origin;
+  } catch {
+    origin = url.origin;
+  }
 
   // User declined consent (or Google returned an error) — no code to exchange.
   if (url.searchParams.get("error")) {
