@@ -119,7 +119,9 @@ export default function InboxApp() {
   const [cache, setCache] = useState<Record<string, JudgeResponseBody>>({});
   const [decisions, setDecisions] = useState<Record<string, UserDecision>>({});
   const [state, setState] = useState<LoadState>({ kind: "idle" });
+  const [pasteText, setPasteText] = useState("");
   const verdictRef = useRef<HTMLDivElement | null>(null);
+  const pasteSeqRef = useRef(0);
 
   // G3.1 race gating. The wire carries a single final verdict (no intermediate
   // score), so the ONLY way red/green can oscillate is an overlapping/stale
@@ -289,6 +291,29 @@ export default function InboxApp() {
 
   function selectSample(message: InboxMessage) {
     rejudge(activeFromSample(message));
+  }
+
+  // 誰でもログイン不要で試せる貼り付け入口。任意テキストを ActiveMessage 化して既存の
+  // 判定フロー（/api/judge）に流す。Gmail 一般開放が OAuth 審査中でも公開デモが成立する。
+  function judgePaste() {
+    const text = pasteText.trim();
+    if (text.length === 0) return;
+    pasteSeqRef.current += 1;
+    rejudge({
+      id: `paste:${pasteSeqRef.current}`,
+      source: "sample",
+      from: "貼り付けたメッセージ",
+      subject: "貼り付けたメッセージ",
+      receivedAt: "",
+      body: text,
+    });
+  }
+
+  function resetToPaste() {
+    abortRef.current?.abort();
+    inflightIdRef.current = null;
+    setActive(null);
+    setState({ kind: "idle" });
   }
 
   async function importInbox() {
@@ -475,15 +500,57 @@ export default function InboxApp() {
 
         <section className="overflow-y-auto px-6 py-5">
           {!selected ? (
-            <div className="flex h-full items-center justify-center text-sm text-zinc-400">
-              左の受信箱からメッセージを選んでください
+            <div className="mx-auto max-w-2xl">
+              <div className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
+                <h2 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">
+                  怪しいメッセージを貼り付けて、今すぐ試す
+                </h2>
+                <p className="mt-1 text-sm text-zinc-500">
+                  ログイン不要。メール・SMS の本文を貼り付けて「判定する」を押すと、詐欺かどうかと「なぜ危ないか」を判定します。
+                </p>
+                <textarea
+                  value={pasteText}
+                  onChange={(e) => setPasteText(e.target.value)}
+                  rows={8}
+                  placeholder="ここに怪しいメール／SMS の本文を貼り付け…"
+                  className="mt-3 w-full resize-y rounded-lg border border-zinc-300 bg-white p-3 text-sm leading-6 text-zinc-800 focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
+                />
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={judgePaste}
+                    disabled={pasteText.trim().length === 0}
+                    className="rounded-md bg-zinc-800 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-200 dark:text-zinc-900 dark:hover:bg-white"
+                  >
+                    判定する
+                  </button>
+                  <span className="text-xs text-zinc-400">
+                    または左のサンプル・上の Gmail 連携から
+                  </span>
+                </div>
+                <p className="mt-4 border-t border-zinc-100 pt-3 text-xs leading-5 text-zinc-400 dark:border-zinc-800">
+                  ※ この貼り付け判定は<strong className="font-semibold text-zinc-500 dark:text-zinc-300">誰でもログイン不要</strong>でお試しいただけます。Gmail
+                  連携（受信メールの自動判定）は現在 <strong className="font-semibold text-zinc-500 dark:text-zinc-300">Google の OAuth 審査中</strong>のため一般開放前ですが、テストユーザーでは<strong className="font-semibold text-zinc-500 dark:text-zinc-300">動作検証済み</strong>です。
+                </p>
+              </div>
             </div>
           ) : (
             <article className="mx-auto max-w-3xl">
+              {selected.id.startsWith("paste:") && (
+                <button
+                  type="button"
+                  onClick={resetToPaste}
+                  className="mb-3 text-sm text-zinc-500 underline underline-offset-2 hover:text-zinc-700 dark:hover:text-zinc-300"
+                >
+                  ← 別のメッセージを貼り付けて試す
+                </button>
+              )}
               <div className="mb-4 space-y-1">
-                <div className="text-xs text-zinc-500">
-                  受信: {selected.receivedAt}
-                </div>
+                {selected.receivedAt && (
+                  <div className="text-xs text-zinc-500">
+                    受信: {selected.receivedAt}
+                  </div>
+                )}
                 <div className="text-sm text-zinc-700 dark:text-zinc-300">
                   {selected.from}
                 </div>
