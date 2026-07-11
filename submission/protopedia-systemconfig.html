@@ -1,0 +1,21 @@
+<p>Gmail と連携し、受信メールを<strong>自動で取得・判定</strong>します（手で貼り付ける必要はありません）。判定は本番 Cloud Run 上の防御パイプラインが担います。</p>
+
+<h3>防御パイプライン（本番・Cloud Run）</h3>
+<ol>
+  <li><strong>構造分解</strong>：Gemini（Vertex / 2.5 Flash）がメッセージから6レバー（緊急性・権威・報酬/恐怖・誘導・個人化・孤立化）を逆算。</li>
+  <li><strong>能動調査（function-calling）</strong>：matchKnownScams（事例DB照合）を必ず1回。加えて Web Risk（URL評価）／RDAP（ドメイン年齢）／SPF・DKIM・DMARC（送信者認証）／公的アラート照合を、入力の特徴に応じて<strong>モデルが動的に選択</strong>。</li>
+  <li><strong>総合判断</strong>：レバー×重みの素点に調査の危険シグナルを<strong>加点のみ</strong>で重ね、確信度スコアと「なぜ危ないか」の日本語説明を生成。</li>
+  <li><strong>自己改善</strong>：すり抜けた型を Firestore に書き戻し、次の照合材料に。</li>
+</ol>
+
+<h3>攻防ループ（自己改善）</h3>
+<p>攻撃AI（狼）が検知器の死角を突く「6レバーの型」を進化 → 防御AI（番犬）が同じパイプラインで判定 → すり抜けた型を事例DBへ書き戻し → 次ラウンドで matchKnownScams が類似を捕捉。ラウンドを回して検知器が自分で強くなります。</p>
+
+<h3>安全設計</h3>
+<p>そのまま送れる完成詐欺文は<strong>生成も保存もしません</strong>。詐欺は「6つの心理レバーの設定値」として表現するので、悪用可能な危険物が残りません。</p>
+
+<h3>インフラ</h3>
+<p>Next.js（TypeScript）／ Cloud Run ／ Firestore ／ Vertex AI（Gemini 2.5 Flash）／ Google Web Risk ／ RDAP。<strong>鍵レス（ADC）</strong>でデプロイし、鍵は Secret Manager 経由で管理。サービスアカウント JSON はリポジトリにもイメージにも置きません。</p>
+
+<h3>公開デモの多層防御</h3>
+<p>公開の判定APIは <strong>IP 単位＋インスタンス単位の2層レート制限</strong>で保護（Cloud Run の静的天井＝max-instances／concurrency／timeout・予算アラートと多層）。Gemini の構造化出力は responseSchema＋<strong>実行時の深い検証</strong>（enum・数値範囲・未知キー拒否）の二重壁で受け、不正応答は判定保留に倒します。説明生成の AI が停止しても、検出レバーから<strong>決定論的に「なぜ危ないか」を説明</strong>します。</p>
