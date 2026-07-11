@@ -1,8 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "../route";
 import { analyzeStructure } from "@/agents/analyzeStructure";
 import { investigate } from "@/agents/investigate";
 import { judge } from "@/agents/judge";
+import {
+  JUDGE_RATE_LIMIT,
+  __resetJudgeRateLimiterForTests,
+} from "@/lib/rateLimit";
 import type { AttackPattern } from "@/types/attackPattern";
 
 vi.mock("@/agents/analyzeStructure", () => ({
@@ -24,16 +28,26 @@ const NEUTRAL_LEVERS: AttackPattern["levers"] = {
   isolation: { tactic: "none", intensity: 0 },
 };
 
-function makeRequest(body: unknown): Request {
+function makeRequest(
+  body: unknown,
+  headers: Record<string, string> = {},
+): Request {
   return new Request("http://localhost/api/judge", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The judge rate limiter is a module singleton — without this reset the
+  // POSTs issued by earlier tests would trip the limit in later ones.
+  __resetJudgeRateLimiterForTests();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("/api/judge route", () => {
@@ -132,5 +146,88 @@ describe("/api/judge route", () => {
     expect(response.status).toBe(413);
     expect(body.error).toBe("payload_too_large");
     expect(analyzeStructure).not.toHaveBeenCalled();
+  });
+});
+
+describe("/api/judge rate limiting", () => {
+  function mockHappyPath() {
+    vi.mocked(analyzeStructure).mockResolvedValue({
+      levers: NEUTRAL_LEVERS,
+      degraded: false,
+    });
+    vi.mocked(investigate).mockResolvedValue({
+      truncated: false,
+      truncatedReason: null,
+      bonus: { items: [], total: 0, capped: false },
+    });
+    vi.mocked(judge).mockResolvedValue({
+      score: 42,
+      reason: "test reason",
+      isolationNote: null,
+      investigationBonus: { items: [], total: 0, capped: false },
+    });
+  }
+
+  async function exhaust(ip: string): Promise<void> {
+    for (let i = 0; i < JUDGE_RATE_LIMIT.perClientLimit; i++) {
+      const response = await POST(
+        makeRequest({ message: "hello" }, { "x-forwarded-for": ip }),
+      );
+      expect(response.status).toBe(200);
+    }
+  }
+
+  it("returns 429 with Retry-After once a client exceeds its window, without reading the body", async () => {
+    mockHappyPath();
+    await exhaust("203.0.113.7");
+
+    const callsBefore = vi.mocked(analyzeStructure).mock.calls.length;
+    const response = await POST(
+      makeRequest({ message: "hello" }, { "x-forwarded-for": "203.0.113.7" }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(body).toEqual({ error: "rate_limited" });
+    const retryAfter = Number(response.headers.get("Retry-After"));
+    expect(retryAfter).toBeGreaterThanOrEqual(1);
+    expect(retryAfter).toBeLessThanOrEqual(60);
+    // Short-circuits before body parsing and before any agent runs.
+    expect(vi.mocked(analyzeStructure).mock.calls.length).toBe(callsBefore);
+  });
+
+  it("keeps serving other clients while one is limited", async () => {
+    mockHappyPath();
+    await exhaust("203.0.113.7");
+
+    const limited = await POST(
+      makeRequest({ message: "hello" }, { "x-forwarded-for": "203.0.113.7" }),
+    );
+    expect(limited.status).toBe(429);
+
+    const other = await POST(
+      makeRequest({ message: "hello" }, { "x-forwarded-for": "198.51.100.9" }),
+    );
+    expect(other.status).toBe(200);
+  });
+
+  it("lets a limited client through again after the window elapses", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-11T00:00:00Z"));
+    mockHappyPath();
+    await exhaust("203.0.113.7");
+
+    const limited = await POST(
+      makeRequest({ message: "hello" }, { "x-forwarded-for": "203.0.113.7" }),
+    );
+    expect(limited.status).toBe(429);
+
+    vi.setSystemTime(
+      new Date(Date.now() + JUDGE_RATE_LIMIT.windowMs),
+    );
+    const recovered = await POST(
+      makeRequest({ message: "hello" }, { "x-forwarded-for": "203.0.113.7" }),
+    );
+    expect(recovered.status).toBe(200);
   });
 });

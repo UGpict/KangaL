@@ -1,6 +1,8 @@
 import { analyzeStructure } from "@/agents/analyzeStructure";
 import { investigate } from "@/agents/investigate";
 import { judge } from "@/agents/judge";
+import { getClientIp } from "@/lib/clientIp";
+import { judgeRateLimiter } from "@/lib/rateLimit";
 import { readBoundedJson } from "@/lib/readBoundedJson";
 import { MAX_AUTH_LENGTH, MAX_MESSAGE_LENGTH } from "@/lib/inputLimits";
 import type {
@@ -20,6 +22,18 @@ export type JudgeResponseBody =
     };
 
 export async function POST(request: Request): Promise<Response> {
+  // Before body parsing: a limited request must cost nothing beyond this check.
+  const decision = judgeRateLimiter.check(getClientIp(request));
+  if (!decision.allowed) {
+    return Response.json(
+      { error: "rate_limited" },
+      {
+        status: 429,
+        headers: { "Retry-After": String(decision.retryAfterSeconds) },
+      },
+    );
+  }
+
   const parsed = await readBoundedJson(request);
   if (!parsed.ok) {
     const status = parsed.error === "payload_too_large" ? 413 : 400;

@@ -273,7 +273,10 @@ export default function InboxApp() {
       const errKey = e instanceof Error ? e.message : "unknown";
       setState({
         kind: "error",
-        message: `通信または解析に失敗しました (${errKey})。`,
+        message:
+          errKey === "rate_limited"
+            ? "アクセスが集中しています。しばらく時間をおいてからもう一度お試しください。"
+            : `通信または解析に失敗しました (${errKey})。`,
         retry: () => rejudge(msg),
       });
     } finally {
