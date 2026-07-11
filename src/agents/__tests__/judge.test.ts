@@ -200,14 +200,33 @@ describe("judge", () => {
     expect(call.systemInstruction).not.toContain("なぜ危ないか");
   });
 
-  it("falls back to safe default reason when generateJson throws — score and isolationNote unchanged", async () => {
+  it("falls back to a deterministic lever-based reason when generateJson throws — score and isolationNote unchanged", async () => {
     vi.mocked(generateJson).mockRejectedValue(new Error("Vertex unavailable"));
     const result = await judge(BEC_LEVERS);
     expect(result.score).toBe(92);
     expect(result.isolationNote).toContain("孤立化");
-    expect(result.reason).toBe(
-      "解析結果から危険度を判定しました。文面を落ち着いてご確認ください。",
-    );
+    // The LLM is down but the red card must still explain WHY: the reason is
+    // assembled deterministically from the active levers.
+    expect(result.reason).toContain("送金を求めている");
+    expect(result.reason).toContain("注意");
+  });
+
+  it("deterministic fallback includes investigation findings but never external alert titles", async () => {
+    vi.mocked(generateJson).mockRejectedValue(new Error("Vertex unavailable"));
+    const report: InvestigationReport = {
+      truncated: false,
+      truncatedReason: null,
+      bonus: { items: [], total: 0, capped: false },
+      officialAlerts: {
+        status: "ok",
+        matches: [
+          { title: "カンガル銀行を装う詐欺", url: "https://alert.example" },
+        ],
+      },
+    };
+    const result = await judge(BEC_LEVERS, report);
+    expect(result.reason).toContain("注意を呼びかけている");
+    expect(result.reason).not.toContain("カンガル銀行");
   });
 
   it("investigationBonus is empty (total 0) when no investigation is passed", async () => {

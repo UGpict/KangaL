@@ -1,6 +1,7 @@
 import { Type } from "@google/genai";
 import type { AttackPattern } from "@/types/attackPattern";
 import { generateJson } from "@/lib/gemini";
+import { buildFallbackReason } from "@/lib/fallbackReason";
 import { wrapUntrusted } from "@/lib/untrustedInput";
 import {
   computeInvestigationBonus,
@@ -182,7 +183,9 @@ export async function judge(
   const isolationNote =
     levers.isolation.intensity > 0 ? ISOLATION_CAVEAT : null;
 
-  let reason = FALLBACK_REASON;
+  // Deterministic default so a Gemini failure still yields a reason built
+  // from the detected levers; FALLBACK_REASON is the last-resort guard.
+  let reason = buildFallbackReason(levers, score, investigation) || FALLBACK_REASON;
   try {
     const payload = pickActivePayload(levers, score, investigation);
     const band: "danger" | "safe" =
