@@ -206,6 +206,34 @@ describe("generateAttackPattern degraded fallback", () => {
     // urgency present but other 5 levers absent → not a full levers shape.
     expect(p.sourceContext).toBe("fallback-seed");
   });
+
+  it("falls back when levers parse but intensity is out of range (deep validation)", async () => {
+    const bad = structuredClone(VALID_LEVERS) as unknown as Record<
+      string,
+      Record<string, unknown>
+    >;
+    bad.urgency.intensity = 5;
+    vi.mocked(generateJson).mockResolvedValue({
+      text: JSON.stringify({ channel: "email", levers: bad }),
+    });
+    const p = await generateAttackPattern({ reconFetcher: stubFetcher });
+    expect(p.sourceContext).toBe("fallback-seed");
+  });
+
+  it("falls back when levers smuggle an unknown free-text key (道B runtime enforcement)", async () => {
+    // Until now the ALLOWED_SHAPE whitelist below was test-fixture-only —
+    // production assigned obj.levers verbatim. This pins the runtime rejection.
+    const bad = structuredClone(VALID_LEVERS) as unknown as Record<
+      string,
+      Record<string, unknown>
+    >;
+    bad.urgency.craftedText = "至急お振込みください";
+    vi.mocked(generateJson).mockResolvedValue({
+      text: JSON.stringify({ channel: "email", levers: bad }),
+    });
+    const p = await generateAttackPattern({ reconFetcher: stubFetcher });
+    expect(p.sourceContext).toBe("fallback-seed");
+  });
 });
 
 // ── 道B whitelist recursive verification ────────────────────────────────────

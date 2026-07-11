@@ -109,6 +109,30 @@ describe("analyzeStructure", () => {
     expect(result.degraded).toBe(true);
   });
 
+  it("returns degraded:true when levers parse but intensity is a non-numeric string (deep validation)", async () => {
+    // The motivating fail-open: a string intensity would flow into strengthOf
+    // as NaN, and `NaN >= threshold` lands the message in the SAFE band.
+    const bad = structuredClone(VALID_LEVERS) as unknown as Record<
+      string,
+      Record<string, unknown>
+    >;
+    bad.urgency.intensity = "very high";
+    vi.mocked(generateJson).mockResolvedValue({ text: JSON.stringify(bad) });
+    const result = await analyzeStructure("msg");
+    expect(result.degraded).toBe(true);
+  });
+
+  it("returns degraded:true when a lever value is off-enum (deep validation)", async () => {
+    const bad = structuredClone(VALID_LEVERS) as unknown as Record<
+      string,
+      Record<string, unknown>
+    >;
+    bad.urgency.tactic = "very urgent";
+    vi.mocked(generateJson).mockResolvedValue({ text: JSON.stringify(bad) });
+    const result = await analyzeStructure("msg");
+    expect(result.degraded).toBe(true);
+  });
+
   it("returns degraded:true when generateJson throws (Vertex AI unavailable etc.)", async () => {
     vi.mocked(generateJson).mockRejectedValue(new Error("Vertex AI unavailable"));
     const result = await analyzeStructure("msg");

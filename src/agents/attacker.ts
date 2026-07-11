@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Type } from "@google/genai";
 import { generateJson } from "@/lib/gemini";
 import { LEVERS_SCHEMA } from "@/agents/shared/leversSchema";
+import { isLeversShape } from "@/agents/shared/validateLevers";
 import { wrapUntrusted } from "@/lib/untrustedInput";
 import {
   reconPublicAlerts,
@@ -74,23 +75,6 @@ function buildSystemInstruction(tag: string): string {
 - そこに現れる手口の傾向（なりすまし対象・媒体など）をレバーの組み合わせに反映する。
 
 JSON のみを出力。前置き・後置き・コードブロックは禁止。`;
-}
-
-function isLeversShape(value: unknown): value is AttackPattern["levers"] {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Record<string, unknown>;
-  for (const key of [
-    "urgency",
-    "authority",
-    "incentive",
-    "callToAction",
-    "personalization",
-    "isolation",
-  ] as const) {
-    const lever = v[key];
-    if (typeof lever !== "object" || lever === null) return false;
-  }
-  return true;
 }
 
 // Deterministic seed returned when Gemini fails or returns malformed output.

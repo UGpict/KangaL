@@ -1,4 +1,5 @@
 import { Type } from "@google/genai";
+import type { AttackPattern } from "@/types/attackPattern";
 
 // Single physical source of truth for the 6-lever response schema, shared by
 // the defense side (analyzeStructure:逆算) and the attack side (attacker: 型生成).
@@ -8,6 +9,91 @@ import { Type } from "@google/genai";
 // number (intensity 0-3). There is intentionally NO free-text input field —
 // the schema itself is the first wall preventing a completed scam message from
 // ever flowing through a lever payload.
+
+type Levers = AttackPattern["levers"];
+
+// Pins each enum array to the TS union in BOTH drift directions:
+// - the `readonly Union[]` constraint rejects an array member outside the union;
+// - the conditional-type intersection rejects a union member missing from the
+//   array (the direction that would make the runtime validator falsely reject
+//   legitimate model output), naming the missing member in the type error.
+// The returned value keeps its literal tuple type, so (typeof X)[number] stays
+// precise for consumers (validateLevers).
+const exhaustiveEnum =
+  <Union extends string>() =>
+  <const A extends readonly Union[]>(
+    values: A &
+      ([Union] extends [A[number]]
+        ? unknown
+        : ["ERROR: missing enum member", Exclude<Union, A[number]>]),
+  ): A =>
+    values;
+
+export const URGENCY_TACTICS = exhaustiveEnum<Levers["urgency"]["tactic"]>()([
+  "deadline",
+  "account_freeze",
+  "limited_offer",
+  "none",
+]);
+
+export const IMPERSONATES = exhaustiveEnum<
+  Levers["authority"]["impersonates"]
+>()([
+  "financial",
+  "government",
+  "business_partner",
+  "executive",
+  "delivery",
+  "platform",
+  "none",
+]);
+
+export const CREDIBILITY_TRICKS = exhaustiveEnum<
+  Levers["authority"]["credibilityTricks"][number]
+>()(["logo_mimicry", "formal_tone", "reference_number", "url_lookalike"]);
+
+export const INCENTIVE_TYPES = exhaustiveEnum<Levers["incentive"]["type"]>()([
+  "reward",
+  "fear",
+]);
+
+export const INCENTIVE_HOOKS = exhaustiveEnum<Levers["incentive"]["hook"]>()([
+  "prize",
+  "refund",
+  "penalty",
+  "account_loss",
+  "legal_threat",
+]);
+
+export const CTA_ACTIONS = exhaustiveEnum<Levers["callToAction"]["action"]>()([
+  "click_link",
+  "transfer_money",
+  "input_credentials",
+  "call_number",
+  "install_app",
+  "scan_qr",
+]);
+
+export const FRICTIONS = exhaustiveEnum<Levers["callToAction"]["friction"]>()([
+  "low",
+  "mid",
+  "high",
+]);
+
+export const PERSONALIZATION_LEVELS = exhaustiveEnum<
+  Levers["personalization"]["level"]
+>()(["broadcast", "segmented", "targeted"]);
+
+export const PERSONALIZATION_SIGNALS = exhaustiveEnum<
+  Levers["personalization"]["signals"][number]
+>()(["real_name", "transaction_history", "thread_injection", "internal_jargon"]);
+
+export const ISOLATION_TACTICS = exhaustiveEnum<
+  Levers["isolation"]["tactic"]
+>()(["secrecy", "bypass_approval", "direct_channel", "none"]);
+
+// Spread (`[...X]`) so the wire schema carries plain string[], not readonly
+// tuples — keeps it assignable if a `satisfies Schema` is ever added.
 export const LEVERS_SCHEMA = {
   type: Type.OBJECT,
   properties: {
@@ -16,7 +102,7 @@ export const LEVERS_SCHEMA = {
       properties: {
         tactic: {
           type: Type.STRING,
-          enum: ["deadline", "account_freeze", "limited_offer", "none"],
+          enum: [...URGENCY_TACTICS],
         },
         intensity: { type: Type.INTEGER, minimum: 0, maximum: 3 },
       },
@@ -27,26 +113,13 @@ export const LEVERS_SCHEMA = {
       properties: {
         impersonates: {
           type: Type.STRING,
-          enum: [
-            "financial",
-            "government",
-            "business_partner",
-            "executive",
-            "delivery",
-            "platform",
-            "none",
-          ],
+          enum: [...IMPERSONATES],
         },
         credibilityTricks: {
           type: Type.ARRAY,
           items: {
             type: Type.STRING,
-            enum: [
-              "logo_mimicry",
-              "formal_tone",
-              "reference_number",
-              "url_lookalike",
-            ],
+            enum: [...CREDIBILITY_TRICKS],
           },
         },
       },
@@ -55,10 +128,10 @@ export const LEVERS_SCHEMA = {
     incentive: {
       type: Type.OBJECT,
       properties: {
-        type: { type: Type.STRING, enum: ["reward", "fear"] },
+        type: { type: Type.STRING, enum: [...INCENTIVE_TYPES] },
         hook: {
           type: Type.STRING,
-          enum: ["prize", "refund", "penalty", "account_loss", "legal_threat"],
+          enum: [...INCENTIVE_HOOKS],
         },
         intensity: { type: Type.INTEGER, minimum: 0, maximum: 3 },
       },
@@ -69,16 +142,9 @@ export const LEVERS_SCHEMA = {
       properties: {
         action: {
           type: Type.STRING,
-          enum: [
-            "click_link",
-            "transfer_money",
-            "input_credentials",
-            "call_number",
-            "install_app",
-            "scan_qr",
-          ],
+          enum: [...CTA_ACTIONS],
         },
-        friction: { type: Type.STRING, enum: ["low", "mid", "high"] },
+        friction: { type: Type.STRING, enum: [...FRICTIONS] },
       },
       required: ["action", "friction"],
     },
@@ -87,18 +153,13 @@ export const LEVERS_SCHEMA = {
       properties: {
         level: {
           type: Type.STRING,
-          enum: ["broadcast", "segmented", "targeted"],
+          enum: [...PERSONALIZATION_LEVELS],
         },
         signals: {
           type: Type.ARRAY,
           items: {
             type: Type.STRING,
-            enum: [
-              "real_name",
-              "transaction_history",
-              "thread_injection",
-              "internal_jargon",
-            ],
+            enum: [...PERSONALIZATION_SIGNALS],
           },
         },
       },
@@ -109,7 +170,7 @@ export const LEVERS_SCHEMA = {
       properties: {
         tactic: {
           type: Type.STRING,
-          enum: ["secrecy", "bypass_approval", "direct_channel", "none"],
+          enum: [...ISOLATION_TACTICS],
         },
         intensity: { type: Type.INTEGER, minimum: 0, maximum: 3 },
       },

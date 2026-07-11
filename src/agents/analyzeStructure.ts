@@ -1,6 +1,7 @@
 import type { AttackPattern } from "@/types/attackPattern";
 import { generateJson } from "@/lib/gemini";
 import { LEVERS_SCHEMA } from "@/agents/shared/leversSchema";
+import { isLeversShape } from "@/agents/shared/validateLevers";
 import { wrapUntrusted } from "@/lib/untrustedInput";
 
 export type AnalyzeStructureResult = {
@@ -41,23 +42,6 @@ function buildSystemInstruction(tag: string): string {
 - isolation (孤立化): 「内密に」「承認を飛ばせ」「個人連絡で」などの圧力。
 
 出力は JSON のみ。前置き・後置き・コードブロックすべて禁止。`;
-}
-
-function isLeversShape(value: unknown): value is AttackPattern["levers"] {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Record<string, unknown>;
-  for (const key of [
-    "urgency",
-    "authority",
-    "incentive",
-    "callToAction",
-    "personalization",
-    "isolation",
-  ] as const) {
-    const lever = v[key];
-    if (typeof lever !== "object" || lever === null) return false;
-  }
-  return true;
 }
 
 export async function analyzeStructure(
